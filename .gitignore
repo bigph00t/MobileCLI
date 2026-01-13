@@ -1,0 +1,76 @@
+# Mobile app (closed source - separate repo)
+mobile/
+
+# Website (separate repo)
+website/
+
+# Build artifacts
+target/
+dist/
+*.AppImage
+*.dmg
+*.msi
+*.deb
+*.exe
+
+# Dependencies
+node_modules/
+
+# Claude Code cache
+.claude/
+CLAUDE.md
+
+# Environment and secrets
+.env
+.env.*
+secrets.json
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Temp files
+*.tmp
+*.temp
+~
+
+# Research and notes (keep repo clean)
+.research/
+.opencode/
+.playwright-mcp/
+thoughts/
+screenshots/
+
+# Development notes (not for public repo)
+*-RalphPlan.md
+*-RalphProgress.md
+RALPH_LOOP*.md
+PRODUCTION_READINESS*.md
+JSONL-REDESIGN.md
+cli.md
+fixes.md
+fixesnotes.md
+review.md
+asciilogo*
+MobileCLI*.md
+!README.md
+
+# Test files
+test-*.js

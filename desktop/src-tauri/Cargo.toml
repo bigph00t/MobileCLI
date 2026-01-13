@@ -1,0 +1,63 @@
+[package]
+name = "mobilecli-desktop"
+version = "1.0.0"
+description = "Desktop app for managing Claude Code sessions"
+authors = ["bigphoot"]
+edition = "2021"
+rust-version = "1.70"
+
+[lib]
+name = "mobilecli_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# PTY for spawning claude-code
+portable-pty = "0.8"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# WebSocket server
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+socket2 = { version = "0.5", features = ["all"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+strip-ansi-escapes = "0.2"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1"
+local-ip-address = "0.6"
+base64 = "0.22.1"
+rand = "0.8"
+
+# File watching for JSONL real-time updates
+notify = "7"
+
+# E2E Encryption (NaCl secretbox - XSalsa20-Poly1305)
+crypto_secretbox = "0.1"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-shell = "2"
+
+[dev-dependencies]
+tempfile = "3"

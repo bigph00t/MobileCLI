@@ -1,0 +1,212 @@
+import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
+
+export interface Session {
+  id: string;
+  name: string;
+  projectPath: string;
+  createdAt: string;
+  lastActiveAt: string;
+  status: 'active' | 'idle' | 'closed';
+  conversationId?: string | null;
+  cliType: 'claude' | 'gemini';
+}
+
+export interface CliInfo {
+  id: string;
+  name: string;
+  installed: boolean;
+  supportsResume: boolean;
+}
+
+export interface Message {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  toolName?: string;
+  toolResult?: string;
+  timestamp: string;
+  isStreaming?: boolean;
+}
+
+interface SessionState {
+  sessions: Session[];
+  activeSessionId: string | null;
+  messages: Record<string, Message[]>; // sessionId -> messages
+  availableClis: CliInfo[];
+  isLoading: boolean;
+  error: string | null;
+
+  // Actions
+  fetchSessions: () => Promise<void>;
+  fetchAvailableClis: () => Promise<void>;
+  setActiveSession: (sessionId: string | null) => void;
+  createSession: (projectPath: string, name?: string, cliType?: string) => Promise<Session>;
+  closeSession: (sessionId: string) => Promise<void>;
+  resumeSession: (sessionId: string) => Promise<Session>;
+  fetchMessages: (sessionId: string) => Promise<void>;
+  addMessage: (sessionId: string, message: Message) => void;
+  updateMessage: (messageId: string, content: string) => void;
+  sendInput: (sessionId: string, input: string) => Promise<void>;
+}
+
+export const useSessionStore = create<SessionState>((set, get) => ({
+  sessions: [],
+  activeSessionId: null,
+  messages: {},
+  availableClis: [],
+  isLoading: false,
+  error: null,
+
+  fetchSessions: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const sessions = await invoke<Session[]>('get_sessions');
+      // Deduplicate sessions by ID (prevents race condition duplicates)
+      const uniqueSessions = sessions.filter(
+        (session, index, self) => self.findIndex(s => s.id === session.id) === index
+      );
+      set({ sessions: uniqueSessions, isLoading: false });
+    } catch (e) {
+      set({ error: String(e), isLoading: false });
+    }
+  },
+
+  fetchAvailableClis: async () => {
+    try {
+      const clis = await invoke<CliInfo[]>('get_available_clis');
+      set({ availableClis: clis });
+    } catch (e) {
+      console.error('Failed to fetch available CLIs:', e);
+    }
+  },
+
+  setActiveSession: (sessionId) => {
+    set({ activeSessionId: sessionId });
+    if (sessionId && !get().messages[sessionId]) {
+      get().fetchMessages(sessionId);
+    }
+  },
+
+  createSession: async (projectPath, name, cliType) => {
+    set({ isLoading: true, error: null });
+    try {
+      const session = await invoke<Session>('create_session', {
+        request: { project_path: projectPath, name, cli_type: cliType },
+      });
+      // FIX: Prevent duplicate sessions from race condition with session-created event
+      // The Tauri command emits session-created which triggers fetchSessions()
+      // This can race with our direct state update, causing duplicates
+      set((state) => {
+        const exists = state.sessions.some(s => s.id === session.id);
+        if (exists) {
+          // Session already added by fetchSessions() - just set it active
+          return { activeSessionId: session.id, isLoading: false };
+        }
+        return {
+          sessions: [session, ...state.sessions],
+          activeSessionId: session.id,
+          isLoading: false,
+        };
+      });
+      return session;
+    } catch (e) {
+      set({ error: String(e), isLoading: false });
+      throw e;
+    }
+  },
+
+  closeSession: async (sessionId) => {
+    try {
+      await invoke('close_session', { sessionId });
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, status: 'closed' as const } : s
+        ),
+        activeSessionId:
+          state.activeSessionId === sessionId ? null : state.activeSessionId,
+      }));
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  resumeSession: async (sessionId) => {
+    set({ isLoading: true, error: null });
+    try {
+      const session = await invoke<Session>('resume_session', { sessionId });
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? session : s
+        ),
+        activeSessionId: session.id,
+        isLoading: false,
+      }));
+      return session;
+    } catch (e) {
+      set({ error: String(e), isLoading: false });
+      throw e;
+    }
+  },
+
+  fetchMessages: async (sessionId) => {
+    try {
+      // Only fetch from DB if we don't have messages for this session
+      const currentMessages = get().messages[sessionId];
+      if (currentMessages && currentMessages.length > 0) {
+        // Already have messages in memory, don't overwrite
+        return;
+      }
+
+      const messages = await invoke<Message[]>('get_messages', {
+        sessionId,
+        limit: 100,
+      });
+      set((state) => ({
+        messages: { ...state.messages, [sessionId]: messages },
+      }));
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  addMessage: (sessionId, message) => {
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [sessionId]: [...(state.messages[sessionId] || []), message],
+      },
+    }));
+  },
+
+  updateMessage: (messageId, content) => {
+    set((state) => {
+      const newMessages = { ...state.messages };
+      for (const sessionId in newMessages) {
+        newMessages[sessionId] = newMessages[sessionId].map((m) =>
+          m.id === messageId ? { ...m, content } : m
+        );
+      }
+      return { messages: newMessages };
+    });
+  },
+
+  sendInput: async (sessionId, input) => {
+    // Optimistically add user message
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      sessionId,
+      role: 'user',
+      content: input,
+      timestamp: new Date().toISOString(),
+    };
+    get().addMessage(sessionId, userMessage);
+
+    try {
+      await invoke('send_input', { sessionId, input });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+}));
