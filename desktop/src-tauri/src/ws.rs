@@ -1,6 +1,8 @@
 // WebSocket server module - Handles mobile client connections
 
+use crate::codex;
 use crate::db::{CliType, Database};
+use crate::gemini;
 use crate::jsonl;
 use crate::parser::ActivityType;
 use futures_util::{SinkExt, StreamExt};
@@ -207,6 +209,11 @@ pub enum ClientMessage {
         project_path: String,
         name: Option<String>,
         cli_type: Option<String>,
+        /// Claude: Open with --dangerously-skip-permissions flag
+        #[serde(default)]
+        claude_skip_permissions: Option<bool>,
+        /// Codex: Approval policy (untrusted, on-failure, on-request, never)
+        codex_approval_policy: Option<String>,
     },
     CloseSession {
         session_id: String,
@@ -800,55 +807,119 @@ async fn handle_client_message(
         },
 
         ClientMessage::GetMessages { session_id, limit } => {
-            // JSONL Redesign: Try to read from JSONL first for Claude sessions
-            // Fall back to DB for non-Claude CLIs or if JSONL fails
+            // Read from CLI-native session files first (JSONL/JSON)
+            // Fall back to DB if CLI files fail
 
             let limit_val = limit.unwrap_or(100) as usize;
 
-            // Try to get session info for JSONL lookup
+            // Try to get session info for file lookup
             if let Ok(Some(session)) = db.get_session(&session_id) {
-                if session.cli_type == "claude" {
-                    if let Some(ref conversation_id) = session.conversation_id {
-                        let jsonl_path = jsonl::get_jsonl_path(&session.project_path, conversation_id);
+                let conversation_id = session.conversation_id.as_deref().unwrap_or(&session_id);
 
+                // Helper to convert activities to MessageInfo
+                let convert_activities = |activities: Vec<crate::jsonl::Activity>, sid: &str| -> Vec<MessageInfo> {
+                    activities
+                        .into_iter()
+                        .filter(|a| a.activity_type != ActivityType::Thinking)
+                        .take(limit_val)
+                        .map(|a| {
+                            let role = match a.activity_type {
+                                ActivityType::UserPrompt => "user".to_string(),
+                                _ => "assistant".to_string(),
+                            };
+                            MessageInfo {
+                                id: a.uuid.unwrap_or_else(|| format!("act_{}", a.timestamp)),
+                                session_id: sid.to_string(),
+                                role,
+                                content: a.content,
+                                tool_name: a.tool_name,
+                                tool_result: None,
+                                timestamp: a.timestamp,
+                            }
+                        })
+                        .collect()
+                };
+
+                match session.cli_type.as_str() {
+                    "claude" => {
+                        // Claude: JSONL at ~/.claude/projects/{hash}/{session}.jsonl
+                        let jsonl_path = jsonl::get_jsonl_path(&session.project_path, conversation_id);
                         if jsonl_path.exists() {
                             match jsonl::read_activities(&session.project_path, conversation_id) {
                                 Ok(activities) => {
-                                    // Convert JSONL activities to MessageInfo format
-                                    // FIX: Filter out thinking activities - they're internal and shouldn't
-                                    // be shown to users (e.g., "The user wants me to...", "let me confirm...")
-                                    let messages: Vec<MessageInfo> = activities
-                                        .into_iter()
-                                        .filter(|a| a.activity_type != ActivityType::Thinking)
-                                        .take(limit_val)
-                                        .map(|a| {
-                                            let role = match a.activity_type {
-                                                ActivityType::UserPrompt => "user".to_string(),
-                                                _ => "assistant".to_string(),
-                                            };
-                                            MessageInfo {
-                                                id: a.uuid.unwrap_or_else(|| format!("act_{}", a.timestamp)),
-                                                session_id: session_id.clone(),
-                                                role,
-                                                content: a.content,
-                                                tool_name: a.tool_name,
-                                                tool_result: None, // JSONL activities don't have tool_result
-                                                timestamp: a.timestamp,
-                                            }
-                                        })
-                                        .collect();
-
-                                    return ServerMessage::Messages {
-                                        session_id,
-                                        messages,
-                                    };
+                                    let messages = convert_activities(activities, &session_id);
+                                    return ServerMessage::Messages { session_id, messages };
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to read JSONL for session {}: {}", session_id, e);
-                                    // Fall through to DB fallback
+                                    tracing::warn!("Failed to read Claude JSONL for session {}: {}", session_id, e);
                                 }
                             }
                         }
+                    }
+                    "codex" => {
+                        // Codex: JSONL at ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+                        if let Some(codex_path) = codex::find_session_file(conversation_id)
+                            .or_else(|| codex::get_latest_session_file())
+                        {
+                            match codex::read_codex_file(&codex_path) {
+                                Ok(records) => {
+                                    let activities: Vec<_> = records
+                                        .iter()
+                                        .flat_map(codex::record_to_activities)
+                                        .map(|a| crate::jsonl::Activity {
+                                            activity_type: a.activity_type,
+                                            content: a.content,
+                                            tool_name: a.tool_name,
+                                            tool_params: a.tool_params,
+                                            file_path: a.file_path,
+                                            is_streaming: a.is_streaming,
+                                            timestamp: a.timestamp,
+                                            uuid: a.uuid,
+                                        })
+                                        .collect();
+                                    let messages = convert_activities(activities, &session_id);
+                                    return ServerMessage::Messages { session_id, messages };
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to read Codex JSONL for session {}: {}", session_id, e);
+                                }
+                            }
+                        }
+                    }
+                    "gemini" => {
+                        // Gemini: JSON at ~/.gemini/tmp/{hash}/chats/session-*.json
+                        if let Some(gemini_path) = gemini::find_session_file(&session.project_path, conversation_id)
+                            .or_else(|| gemini::get_latest_session_file(&session.project_path))
+                        {
+                            match gemini::read_session_file(&gemini_path) {
+                                Ok(session_data) => {
+                                    let activities: Vec<_> = session_data
+                                        .messages
+                                        .iter()
+                                        .flat_map(gemini::message_to_activities)
+                                        .map(|a| crate::jsonl::Activity {
+                                            activity_type: a.activity_type,
+                                            content: a.content,
+                                            tool_name: a.tool_name,
+                                            tool_params: a.tool_params,
+                                            file_path: a.file_path,
+                                            is_streaming: a.is_streaming,
+                                            timestamp: a.timestamp,
+                                            uuid: a.uuid,
+                                        })
+                                        .collect();
+                                    let messages = convert_activities(activities, &session_id);
+                                    return ServerMessage::Messages { session_id, messages };
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to read Gemini JSON for session {}: {}", session_id, e);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // OpenCode or unknown - fall through to DB
+                        tracing::debug!("No native file parser for CLI type: {}", session.cli_type);
                     }
                 }
             }
@@ -992,7 +1063,7 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::CreateSession { project_path, name, cli_type } => {
+        ClientMessage::CreateSession { project_path, name, cli_type, claude_skip_permissions, codex_approval_policy } => {
             // Parse CLI type (default to Claude)
             let parsed_cli_type = cli_type
                 .as_deref()
@@ -1020,13 +1091,15 @@ async fn handle_client_message(
                         cli_type: session.cli_type.clone(),
                     };
 
-                    // Emit event to start PTY session
+                    // Emit event to start PTY session with CLI-specific settings
                     let _ = app.emit(
                         "create-session",
                         serde_json::json!({
                             "sessionId": session.id,
                             "projectPath": project_path,
                             "cliType": session.cli_type,
+                            "claudeSkipPermissions": claude_skip_permissions.unwrap_or(false),
+                            "codexApprovalPolicy": codex_approval_policy,
                         }),
                     );
 

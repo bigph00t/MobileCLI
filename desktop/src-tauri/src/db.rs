@@ -14,6 +14,58 @@ pub struct Database {
 pub enum CliType {
     ClaudeCode,
     GeminiCli,
+    OpenCode,
+    Codex,
+}
+
+/// Tool approval interaction model - different CLIs use different input methods
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalModel {
+    /// Claude/Gemini/Codex: 1=Yes, 2=Yes Always, 3=No
+    NumberedOptions,
+    /// Reserved for CLIs that use simple y/n input (not currently used)
+    #[allow(dead_code)]
+    YesNo,
+    /// OpenCode: arrow keys to navigate, Enter to select
+    ArrowNavigation,
+}
+
+/// User's response to a tool approval prompt
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalResponse {
+    /// Allow the tool execution once
+    Yes,
+    /// Allow the tool execution and don't ask again for this tool
+    YesAlways,
+    /// Deny the tool execution
+    No,
+}
+
+impl ApprovalResponse {
+    /// Get the input string to send to the PTY for this approval response
+    /// based on the CLI type's approval model
+    pub fn get_input_for_cli(&self, cli_type: CliType) -> &'static str {
+        match (cli_type.approval_model(), self) {
+            // Claude: numbered options
+            (ApprovalModel::NumberedOptions, ApprovalResponse::Yes) => "1",
+            (ApprovalModel::NumberedOptions, ApprovalResponse::YesAlways) => "2",
+            (ApprovalModel::NumberedOptions, ApprovalResponse::No) => "3",
+
+            // Gemini/Codex: y/n (YesAlways falls back to Yes)
+            (ApprovalModel::YesNo, ApprovalResponse::Yes) => "y",
+            (ApprovalModel::YesNo, ApprovalResponse::YesAlways) => "y", // No "always" option for y/n
+            (ApprovalModel::YesNo, ApprovalResponse::No) => "n",
+
+            // OpenCode: arrow navigation - returns escape sequences
+            // Yes = Enter (first option selected by default)
+            // YesAlways = Right arrow then Enter
+            // No = Right arrow twice then Enter
+            (ApprovalModel::ArrowNavigation, ApprovalResponse::Yes) => "\r",
+            (ApprovalModel::ArrowNavigation, ApprovalResponse::YesAlways) => "\x1b[C\r", // Right + Enter
+            (ApprovalModel::ArrowNavigation, ApprovalResponse::No) => "\x1b[C\x1b[C\r", // Right + Right + Enter
+        }
+    }
 }
 
 impl CliType {
@@ -21,6 +73,8 @@ impl CliType {
         match self {
             CliType::ClaudeCode => "claude",
             CliType::GeminiCli => "gemini",
+            CliType::OpenCode => "opencode",
+            CliType::Codex => "codex",
         }
     }
 
@@ -28,6 +82,8 @@ impl CliType {
         match s {
             "claude" => Some(CliType::ClaudeCode),
             "gemini" => Some(CliType::GeminiCli),
+            "opencode" => Some(CliType::OpenCode),
+            "codex" => Some(CliType::Codex),
             _ => None,
         }
     }
@@ -36,6 +92,8 @@ impl CliType {
         match self {
             CliType::ClaudeCode => "Claude Code",
             CliType::GeminiCli => "Gemini CLI",
+            CliType::OpenCode => "OpenCode",
+            CliType::Codex => "Codex",
         }
     }
 
@@ -43,6 +101,8 @@ impl CliType {
         match self {
             CliType::ClaudeCode => "claude",
             CliType::GeminiCli => "gemini",
+            CliType::OpenCode => "opencode",
+            CliType::Codex => "codex",
         }
     }
 
@@ -51,6 +111,21 @@ impl CliType {
         match self {
             CliType::ClaudeCode => true,
             CliType::GeminiCli => true,
+            CliType::OpenCode => true,  // via -c flag
+            CliType::Codex => true,     // via resume command
+        }
+    }
+
+    /// Get the tool approval interaction model for this CLI
+    pub fn approval_model(&self) -> ApprovalModel {
+        match self {
+            // Claude, Gemini, and Codex all use numbered options (1, 2, 3)
+            // Screenshot confirmed Gemini shows: "1. Allow once", "2. Allow for this session", "3. No"
+            CliType::ClaudeCode => ApprovalModel::NumberedOptions,
+            CliType::GeminiCli => ApprovalModel::NumberedOptions,
+            CliType::Codex => ApprovalModel::NumberedOptions,
+            // OpenCode uses arrow key navigation
+            CliType::OpenCode => ApprovalModel::ArrowNavigation,
         }
     }
 }
@@ -355,6 +430,8 @@ mod tests {
     fn test_cli_type_roundtrip() {
         assert_eq!(CliType::from_str(CliType::ClaudeCode.as_str()), Some(CliType::ClaudeCode));
         assert_eq!(CliType::from_str(CliType::GeminiCli.as_str()), Some(CliType::GeminiCli));
+        assert_eq!(CliType::from_str(CliType::OpenCode.as_str()), Some(CliType::OpenCode));
+        assert_eq!(CliType::from_str(CliType::Codex.as_str()), Some(CliType::Codex));
         assert_eq!(CliType::from_str("invalid"), None);
     }
 
@@ -362,12 +439,26 @@ mod tests {
     fn test_cli_type_display_name() {
         assert_eq!(CliType::ClaudeCode.display_name(), "Claude Code");
         assert_eq!(CliType::GeminiCli.display_name(), "Gemini CLI");
+        assert_eq!(CliType::OpenCode.display_name(), "OpenCode");
+        assert_eq!(CliType::Codex.display_name(), "Codex");
     }
 
     #[test]
     fn test_cli_type_supports_resume() {
         assert!(CliType::ClaudeCode.supports_resume());
         assert!(CliType::GeminiCli.supports_resume());
+        assert!(CliType::OpenCode.supports_resume());
+        assert!(CliType::Codex.supports_resume());
+    }
+
+    #[test]
+    fn test_cli_type_approval_model() {
+        // Claude, Gemini, and Codex all use numbered options (1, 2, 3)
+        assert_eq!(CliType::ClaudeCode.approval_model(), ApprovalModel::NumberedOptions);
+        assert_eq!(CliType::GeminiCli.approval_model(), ApprovalModel::NumberedOptions);
+        assert_eq!(CliType::Codex.approval_model(), ApprovalModel::NumberedOptions);
+        // OpenCode uses arrow navigation
+        assert_eq!(CliType::OpenCode.approval_model(), ApprovalModel::ArrowNavigation);
     }
 
     #[test]

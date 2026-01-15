@@ -124,6 +124,16 @@ impl OutputParser {
                 "Analyzing", "Generating", "Working",
                 "esc to cancel",
             ],
+            CliType::OpenCode => vec![
+                // OpenCode thinking indicators (similar to Claude)
+                "thinking", "Processing", "Working",
+                "Analyzing", "Generating",
+            ],
+            CliType::Codex => vec![
+                // Codex (OpenAI) thinking indicators
+                "thinking", "Processing", "Working",
+                "Analyzing", "Generating",
+            ],
         }
     }
 
@@ -132,6 +142,8 @@ impl OutputParser {
         match self.cli_type {
             CliType::ClaudeCode => ('●', '⎿'),  // Claude uses ● for start, ⎿ for continuation
             CliType::GeminiCli => ('▶', '│'),   // Gemini uses different markers (adjust as needed)
+            CliType::OpenCode => ('●', '│'),    // OpenCode uses similar markers to Claude
+            CliType::Codex => ('▶', '│'),       // Codex uses similar markers to Gemini
         }
     }
 

@@ -21,6 +21,49 @@ impl Default for AppMode {
     }
 }
 
+/// Codex approval policy for tool execution
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodexApprovalPolicy {
+    /// Only trusted commands run without approval
+    Untrusted,
+    /// Ask after failures
+    OnFailure,
+    /// Model decides when to ask
+    OnRequest,
+    /// Fully autonomous (dangerous)
+    Never,
+}
+
+impl Default for CodexApprovalPolicy {
+    fn default() -> Self {
+        CodexApprovalPolicy::Untrusted
+    }
+}
+
+impl CodexApprovalPolicy {
+    /// Get the CLI flag value for this policy
+    pub fn as_flag(&self) -> &'static str {
+        match self {
+            CodexApprovalPolicy::Untrusted => "untrusted",
+            CodexApprovalPolicy::OnFailure => "on-failure",
+            CodexApprovalPolicy::OnRequest => "on-request",
+            CodexApprovalPolicy::Never => "never",
+        }
+    }
+
+    /// Parse a string to CodexApprovalPolicy
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "untrusted" => Some(CodexApprovalPolicy::Untrusted),
+            "on-failure" => Some(CodexApprovalPolicy::OnFailure),
+            "on-request" => Some(CodexApprovalPolicy::OnRequest),
+            "never" => Some(CodexApprovalPolicy::Never),
+            _ => None,
+        }
+    }
+}
+
 /// Main application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -38,6 +81,12 @@ pub struct AppConfig {
     pub last_room_code: Option<String>,
     /// WebSocket server port for host mode
     pub ws_port: u16,
+    /// Claude: Open sessions with --dangerously-skip-permissions flag
+    #[serde(default)]
+    pub claude_skip_permissions: bool,
+    /// Codex: Approval policy for tool execution
+    #[serde(default)]
+    pub codex_approval_policy: CodexApprovalPolicy,
 }
 
 impl Default for AppConfig {
@@ -47,12 +96,13 @@ impl Default for AppConfig {
             version: env!("CARGO_PKG_VERSION").to_string(),
             first_run: true,
             relay_urls: vec![
-                "wss://relay.mobilecli.app".to_string(),  // Primary (once SSL configured)
-                "ws://5.78.147.194:8080".to_string(),     // Fallback (direct IP)
+                "wss://relay.mobilecli.app".to_string(),  // Primary (with SSL via Caddy)
             ],
             last_host_url: None,
             last_room_code: None,
             ws_port: 9847,
+            claude_skip_permissions: false,
+            codex_approval_policy: CodexApprovalPolicy::default(),
         }
     }
 }

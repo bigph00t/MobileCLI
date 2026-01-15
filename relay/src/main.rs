@@ -344,7 +344,7 @@ async fn handle_connection(
         // Mobile client - join existing room
         let code = path.trim_start_matches("/join/").to_uppercase();
 
-        if code.len() != 6 {
+        if code.len() != 16 {
             let msg = serde_json::to_string(&RelayMessage::Error {
                 message: "Invalid room code".to_string(),
             })?;

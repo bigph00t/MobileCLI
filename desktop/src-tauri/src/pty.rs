@@ -1,6 +1,11 @@
 // PTY module - Manages AI CLI processes in pseudo-terminals
 
+use crate::codex;
+use crate::codex_watcher::CodexWatcher;
+use crate::config;
 use crate::db::{CliType, Database};
+use crate::gemini;
+use crate::gemini_watcher::GeminiWatcher;
 use crate::jsonl_watcher::JsonlWatcher;
 use crate::parser::OutputParser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -10,6 +15,29 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// Unified CLI watcher enum - handles different file formats for each CLI
+/// Note: The watcher variants hold watchers that are kept alive for their side effects
+/// (background threads watching files), not for direct access to their fields.
+#[allow(dead_code)]
+enum CliWatcher {
+    /// Claude: JSONL at ~/.claude/projects/{hash}/{session}.jsonl
+    Claude(JsonlWatcher),
+    /// Codex: JSONL at ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+    Codex(CodexWatcher),
+    /// Gemini: JSON at ~/.gemini/tmp/{hash}/chats/session-*.json
+    Gemini(GeminiWatcher),
+}
+
+impl CliWatcher {
+    fn stop(&self) {
+        match self {
+            CliWatcher::Claude(w) => w.stop(),
+            CliWatcher::Codex(w) => w.stop(),
+            CliWatcher::Gemini(w) => w.stop(),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {
@@ -30,10 +58,13 @@ struct PtySession {
     _kill_tx: mpsc::Sender<()>,
     /// Channel to signal user input was sent (for parser tracking)
     user_input_tx: mpsc::Sender<()>,
-    /// JSONL file watcher for Claude sessions (None for other CLI types)
+    /// File watcher for CLI sessions (type depends on CLI)
+    /// - Claude: JSONL watcher for ~/.claude/projects/...
+    /// - Codex: JSONL watcher for ~/.codex/sessions/...
+    /// - Gemini: JSON watcher for ~/.gemini/tmp/...
     /// Kept alive for its side effects (background thread watching for file changes)
     #[allow(dead_code)]
-    jsonl_watcher: Option<JsonlWatcher>,
+    cli_watcher: Option<CliWatcher>,
 }
 
 /// Detect dynamic thinking/progress messages from Claude's PTY output
@@ -169,6 +200,7 @@ impl SessionManager {
         }
     }
 
+    /// Optional settings that can be passed from mobile to override config
     pub async fn start_session(
         &mut self,
         session_id: String,
@@ -176,6 +208,21 @@ impl SessionManager {
         cli_type: CliType,
         db: Arc<Database>,
         app: AppHandle,
+    ) -> Result<(), PtyError> {
+        // Default to config settings when not provided
+        self.start_session_with_settings(session_id, project_path, cli_type, db, app, None, None).await
+    }
+
+    /// Start a session with optional mobile-provided settings
+    pub async fn start_session_with_settings(
+        &mut self,
+        session_id: String,
+        project_path: String,
+        cli_type: CliType,
+        db: Arc<Database>,
+        app: AppHandle,
+        claude_skip_permissions: Option<bool>,
+        codex_approval_policy: Option<String>,
     ) -> Result<(), PtyError> {
         let pty_system = native_pty_system();
 
@@ -192,6 +239,16 @@ impl SessionManager {
         // Build command based on CLI type
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/bigphoot".to_string());
 
+        // Load config for fallback settings
+        let app_config = config::load_config(&app).unwrap_or_default();
+
+        // Use passed settings if provided, otherwise fall back to config
+        let use_skip_permissions = claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
+        let use_codex_policy = codex_approval_policy
+            .as_deref()
+            .and_then(config::CodexApprovalPolicy::from_str)
+            .unwrap_or(app_config.codex_approval_policy);
+
         // Generate a conversation ID for Claude Code sessions
         let conversation_id = uuid::Uuid::new_v4().to_string();
 
@@ -202,6 +259,11 @@ impl SessionManager {
                 // Pass our generated session ID so we can resume later
                 cmd.arg("--session-id");
                 cmd.arg(&conversation_id);
+                // Add --dangerously-skip-permissions if enabled (mobile or config)
+                if use_skip_permissions {
+                    cmd.arg("--dangerously-skip-permissions");
+                    tracing::info!("Claude session starting with --dangerously-skip-permissions");
+                }
                 cmd.cwd(&project_path);
                 cmd
             }
@@ -209,6 +271,29 @@ impl SessionManager {
                 // Gemini CLI is typically installed via npm
                 let mut cmd = CommandBuilder::new("gemini");
                 cmd.cwd(&project_path);
+                cmd
+            }
+            CliType::OpenCode => {
+                // OpenCode is typically installed in ~/.opencode/bin/
+                let opencode_path = format!("{}/.opencode/bin/opencode", home);
+                let mut cmd = CommandBuilder::new(&opencode_path);
+                // OpenCode takes project path as positional argument
+                cmd.arg(&project_path);
+                cmd
+            }
+            CliType::Codex => {
+                // Codex (OpenAI) is typically available on PATH
+                let mut cmd = CommandBuilder::new("codex");
+                // Use -C flag for working directory
+                cmd.arg("-C");
+                cmd.arg(&project_path);
+                // Add approval policy (mobile or config)
+                cmd.arg("-a");
+                cmd.arg(use_codex_policy.as_flag());
+                tracing::info!(
+                    "Codex session starting with approval policy: {}",
+                    use_codex_policy.as_flag()
+                );
                 cmd
             }
         };
@@ -499,25 +584,114 @@ impl SessionManager {
             tracing::info!("Session {} ended", session_id_clone);
         });
 
-        // Create JSONL watcher for Claude sessions
-        let jsonl_watcher = if cli_type == CliType::ClaudeCode {
-            match JsonlWatcher::new(
-                session_id.clone(),
-                project_path_for_watcher,
-                conversation_id_for_watcher,
-                app_for_watcher,
-            ) {
-                Ok(watcher) => {
-                    tracing::info!("Created JSONL watcher for session {}", session_id);
-                    Some(watcher)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create JSONL watcher for session {}: {}", session_id, e);
-                    None
+        // Create file watcher based on CLI type
+        let cli_watcher = match cli_type {
+            CliType::ClaudeCode => {
+                // Claude: JSONL at ~/.claude/projects/{hash}/{session}.jsonl
+                match JsonlWatcher::new(
+                    session_id.clone(),
+                    project_path_for_watcher,
+                    conversation_id_for_watcher,
+                    app_for_watcher,
+                ) {
+                    Ok(watcher) => {
+                        tracing::info!("Created Claude JSONL watcher for session {}", session_id);
+                        Some(CliWatcher::Claude(watcher))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create Claude JSONL watcher for session {}: {}", session_id, e);
+                        None
+                    }
                 }
             }
-        } else {
-            None
+            CliType::Codex => {
+                // Codex: JSONL at ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+                // Find or create the JSONL path for this session
+                let codex_path = codex::find_session_file(&conversation_id_for_watcher)
+                    .or_else(|| codex::get_latest_session_file());
+
+                match codex_path {
+                    Some(path) => {
+                        match CodexWatcher::new(session_id.clone(), path, app_for_watcher) {
+                            Ok(watcher) => {
+                                tracing::info!("Created Codex JSONL watcher for session {}", session_id);
+                                Some(CliWatcher::Codex(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Codex watcher for session {}: {}", session_id, e);
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        // No existing session file - watch the sessions directory for new files
+                        // For now, we'll create a watcher that watches the sessions dir
+                        tracing::info!("No Codex session file found yet, will watch for creation");
+                        let sessions_dir = codex::get_codex_sessions_dir();
+                        let today = chrono::Local::now();
+                        let date_path = sessions_dir
+                            .join(today.format("%Y").to_string())
+                            .join(today.format("%m").to_string())
+                            .join(today.format("%d").to_string());
+
+                        // Create a placeholder path - the watcher will wait for the directory/file
+                        let placeholder_path = date_path.join(format!("rollout-placeholder-{}.jsonl", conversation_id_for_watcher));
+                        match CodexWatcher::new(session_id.clone(), placeholder_path, app_for_watcher) {
+                            Ok(watcher) => {
+                                tracing::info!("Created Codex directory watcher for session {}", session_id);
+                                Some(CliWatcher::Codex(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Codex watcher for session {}: {}", session_id, e);
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            CliType::GeminiCli => {
+                // Gemini: JSON at ~/.gemini/tmp/{hash}/chats/session-*.json
+                let gemini_path = gemini::find_session_file(&project_path_for_watcher, &conversation_id_for_watcher)
+                    .or_else(|| gemini::get_latest_session_file(&project_path_for_watcher));
+
+                match gemini_path {
+                    Some(path) => {
+                        match GeminiWatcher::new(session_id.clone(), path, app_for_watcher) {
+                            Ok(watcher) => {
+                                tracing::info!("Created Gemini JSON watcher for session {}", session_id);
+                                Some(CliWatcher::Gemini(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Gemini watcher for session {}: {}", session_id, e);
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        // No existing session file - watch the chats directory
+                        tracing::info!("No Gemini session file found yet, will watch for creation");
+                        let chats_dir = gemini::get_project_chats_dir(&project_path_for_watcher);
+                        // Create placeholder path in the chats directory
+                        let placeholder_path = chats_dir.join(format!("session-placeholder-{}.json", conversation_id_for_watcher));
+                        match GeminiWatcher::new(session_id.clone(), placeholder_path, app_for_watcher) {
+                            Ok(watcher) => {
+                                tracing::info!("Created Gemini directory watcher for session {}", session_id);
+                                Some(CliWatcher::Gemini(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Gemini watcher for session {}: {}", session_id, e);
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            CliType::OpenCode => {
+                // OpenCode uses a distributed file system that's more complex to watch
+                // For now, skip OpenCode file watching (would need multiple directory watchers)
+                tracing::info!("OpenCode session {} - file watching not yet implemented", session_id);
+                None
+            }
         };
 
         // Store session
@@ -529,7 +703,7 @@ impl SessionManager {
                 _reader_task: reader_task,
                 _kill_tx: kill_tx,
                 user_input_tx,
-                jsonl_watcher,
+                cli_watcher,
             },
         );
 
@@ -692,6 +866,9 @@ impl SessionManager {
 
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/bigphoot".to_string());
 
+        // Load config for CLI-specific settings
+        let app_config = config::load_config(&app).unwrap_or_default();
+
         // Build resume command based on CLI type
         let cmd = match cli_type {
             CliType::ClaudeCode => {
@@ -699,6 +876,11 @@ impl SessionManager {
                 let mut cmd = CommandBuilder::new(&claude_path);
                 cmd.arg("--resume");
                 cmd.arg(&conversation_id);
+                // Add --dangerously-skip-permissions if enabled in config
+                if app_config.claude_skip_permissions {
+                    cmd.arg("--dangerously-skip-permissions");
+                    tracing::info!("Claude resume starting with --dangerously-skip-permissions");
+                }
                 cmd.cwd(&project_path);
                 cmd
             }
@@ -708,6 +890,30 @@ impl SessionManager {
                 cmd.arg("--resume");
                 cmd.arg(&conversation_id); // This should be an index like "1" or "latest"
                 cmd.cwd(&project_path);
+                cmd
+            }
+            CliType::OpenCode => {
+                // OpenCode uses -c flag to continue last session
+                let opencode_path = format!("{}/.opencode/bin/opencode", home);
+                let mut cmd = CommandBuilder::new(&opencode_path);
+                cmd.arg("-c"); // Continue last session
+                cmd.arg(&project_path);
+                cmd
+            }
+            CliType::Codex => {
+                // Codex uses "codex resume [session_id]"
+                let mut cmd = CommandBuilder::new("codex");
+                cmd.arg("resume");
+                cmd.arg(&conversation_id);
+                cmd.arg("-C");
+                cmd.arg(&project_path);
+                // Add approval policy from config
+                cmd.arg("-a");
+                cmd.arg(app_config.codex_approval_policy.as_flag());
+                tracing::info!(
+                    "Codex resume starting with approval policy: {}",
+                    app_config.codex_approval_policy.as_flag()
+                );
                 cmd
             }
         };
@@ -919,25 +1125,75 @@ impl SessionManager {
             tracing::info!("Resumed session {} ended", session_id_clone);
         });
 
-        // Create JSONL watcher for Claude sessions
-        let jsonl_watcher = if cli_type == CliType::ClaudeCode {
-            match JsonlWatcher::new(
-                session_id.clone(),
-                project_path_for_watcher,
-                conversation_id_for_watcher,
-                app_for_watcher,
-            ) {
-                Ok(watcher) => {
-                    tracing::info!("Created JSONL watcher for resumed session {}", session_id);
-                    Some(watcher)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create JSONL watcher for resumed session {}: {}", session_id, e);
-                    None
+        // Create file watcher based on CLI type (same logic as start_session)
+        let cli_watcher = match cli_type {
+            CliType::ClaudeCode => {
+                match JsonlWatcher::new(
+                    session_id.clone(),
+                    project_path_for_watcher,
+                    conversation_id_for_watcher,
+                    app_for_watcher,
+                ) {
+                    Ok(watcher) => {
+                        tracing::info!("Created Claude JSONL watcher for resumed session {}", session_id);
+                        Some(CliWatcher::Claude(watcher))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create Claude JSONL watcher for resumed session {}: {}", session_id, e);
+                        None
+                    }
                 }
             }
-        } else {
-            None
+            CliType::Codex => {
+                let codex_path = codex::find_session_file(&conversation_id_for_watcher)
+                    .or_else(|| codex::get_latest_session_file());
+
+                match codex_path {
+                    Some(path) => {
+                        match CodexWatcher::new(session_id.clone(), path, app_for_watcher) {
+                            Ok(watcher) => {
+                                tracing::info!("Created Codex JSONL watcher for resumed session {}", session_id);
+                                Some(CliWatcher::Codex(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Codex watcher for resumed session {}: {}", session_id, e);
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!("Could not find Codex session file for resume");
+                        None
+                    }
+                }
+            }
+            CliType::GeminiCli => {
+                let gemini_path = gemini::find_session_file(&project_path_for_watcher, &conversation_id_for_watcher)
+                    .or_else(|| gemini::get_latest_session_file(&project_path_for_watcher));
+
+                match gemini_path {
+                    Some(path) => {
+                        match GeminiWatcher::new(session_id.clone(), path, app_for_watcher) {
+                            Ok(watcher) => {
+                                tracing::info!("Created Gemini JSON watcher for resumed session {}", session_id);
+                                Some(CliWatcher::Gemini(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create Gemini watcher for resumed session {}: {}", session_id, e);
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!("Could not find Gemini session file for resume");
+                        None
+                    }
+                }
+            }
+            CliType::OpenCode => {
+                tracing::info!("OpenCode resumed session {} - file watching not yet implemented", session_id);
+                None
+            }
         };
 
         self.sessions.insert(
@@ -948,7 +1204,7 @@ impl SessionManager {
                 _reader_task: reader_task,
                 _kill_tx: kill_tx,
                 user_input_tx,
-                jsonl_watcher,
+                cli_watcher,
             },
         );
 

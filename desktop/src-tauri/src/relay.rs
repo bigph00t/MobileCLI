@@ -23,8 +23,8 @@ use crate::db::Database;
 use crate::parser::ActivityType;
 use crate::ws::{ActivityInfo, ClientMessage, DirectoryEntry, MessageInfo, ServerMessage, SessionInfo};
 
-// Default relay server URL (Hetzner VPS)
-const DEFAULT_RELAY_URL: &str = "ws://5.78.147.194:8080";
+// Default relay server URL (via Caddy reverse proxy with TLS)
+const DEFAULT_RELAY_URL: &str = "wss://relay.mobilecli.app";
 
 /// Get configured relay URLs (from config, env, or defaults)
 fn get_relay_urls(app: Option<&AppHandle>) -> Vec<String> {
@@ -661,7 +661,7 @@ pub async fn start_relay(
                                                         }),
                                                     );
                                                 }
-                                                ClientMessage::CreateSession { project_path, name, cli_type } => {
+                                                ClientMessage::CreateSession { project_path, name, cli_type, claude_skip_permissions, codex_approval_policy } => {
                                                     // Note: For relay, we need to handle this differently
                                                     // since create-session expects a sessionId but mobile
                                                     // doesn't have one yet. Emit relay-create-session instead.
@@ -671,6 +671,8 @@ pub async fn start_relay(
                                                             "projectPath": project_path,
                                                             "name": name,
                                                             "cliType": cli_type,
+                                                            "claudeSkipPermissions": claude_skip_permissions,
+                                                            "codexApprovalPolicy": codex_approval_policy,
                                                         }),
                                                     );
                                                 }

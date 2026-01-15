@@ -2,8 +2,12 @@
 
 mod claude_history;
 mod client_mode;
+mod codex;
+mod codex_watcher;
 mod config;
 mod db;
+mod gemini;
+mod gemini_watcher;
 mod input_coordinator;
 mod jsonl;
 mod jsonl_watcher;
@@ -188,6 +192,18 @@ mod commands {
                 installed: check_installed("gemini"),
                 supports_resume: true,
             },
+            CliInfo {
+                id: "opencode".to_string(),
+                name: "OpenCode".to_string(),
+                installed: check_installed("opencode"),
+                supports_resume: true,
+            },
+            CliInfo {
+                id: "codex".to_string(),
+                name: "Codex".to_string(),
+                installed: check_installed("codex"),
+                supports_resume: true,
+            },
         ])
     }
 
@@ -230,6 +246,43 @@ mod commands {
         let manager = state.session_manager.read().await;
         manager
             .send_raw_input(&session_id, &input)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Send a tool approval response to a session
+    /// This handles CLI-specific approval input (numbered options, y/n, arrow keys)
+    #[tauri::command]
+    pub async fn send_tool_approval(
+        state: tauri::State<'_, AppState>,
+        session_id: String,
+        response: crate::db::ApprovalResponse,
+    ) -> Result<(), String> {
+        // Get session to determine CLI type
+        let session = state
+            .db
+            .get_session(&session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+        // Parse CLI type
+        let cli_type = crate::db::CliType::from_str(&session.cli_type)
+            .ok_or_else(|| format!("Unknown CLI type: {}", session.cli_type))?;
+
+        // Get the appropriate input string for this CLI's approval model
+        let input = response.get_input_for_cli(cli_type);
+
+        tracing::info!(
+            "Sending tool approval to session {}: {:?} -> {:?}",
+            session_id,
+            response,
+            input.as_bytes()
+        );
+
+        // Send to PTY as raw input
+        let manager = state.session_manager.read().await;
+        manager
+            .send_raw_input(&session_id, input)
             .await
             .map_err(|e| e.to_string())
     }
@@ -996,6 +1049,10 @@ pub fn run() {
                     let project_path = payload["projectPath"].as_str().unwrap_or("").to_string();
                     let cli_type_str = payload["cliType"].as_str().unwrap_or("claude");
 
+                    // Extract CLI-specific settings from mobile
+                    let claude_skip_permissions = payload["claudeSkipPermissions"].as_bool();
+                    let codex_approval_policy = payload["codexApprovalPolicy"].as_str().map(|s| s.to_string());
+
                     let cli_type = db::CliType::from_str(cli_type_str).unwrap_or(db::CliType::ClaudeCode);
 
                     if !session_id.is_empty() && !project_path.is_empty() {
@@ -1004,7 +1061,16 @@ pub fn run() {
                         let app = app_handle2.clone();
                         tauri::async_runtime::spawn(async move {
                             let mut mgr = manager.write().await;
-                            if let Err(e) = mgr.start_session(session_id.clone(), project_path, cli_type, db, app).await {
+                            // Use start_session_with_settings to pass mobile settings
+                            if let Err(e) = mgr.start_session_with_settings(
+                                session_id.clone(),
+                                project_path,
+                                cli_type,
+                                db,
+                                app,
+                                claude_skip_permissions,
+                                codex_approval_policy,
+                            ).await {
                                 tracing::error!("Failed to start session {}: {}", session_id, e);
                             }
                         });
@@ -1089,6 +1155,10 @@ pub fn run() {
                     let name = payload["name"].as_str().map(|s| s.to_string());
                     let cli_type_str = payload["cliType"].as_str().unwrap_or("claude");
 
+                    // Extract CLI-specific settings from relay (mobile)
+                    let claude_skip_permissions = payload["claudeSkipPermissions"].as_bool();
+                    let codex_approval_policy = payload["codexApprovalPolicy"].as_str().map(|s| s.to_string());
+
                     let cli_type = db::CliType::from_str(cli_type_str).unwrap_or(db::CliType::ClaudeCode);
 
                     if !project_path.is_empty() {
@@ -1119,14 +1189,16 @@ pub fn run() {
                                         }),
                                     );
 
-                                    // Start PTY process
+                                    // Start PTY process with mobile settings
                                     let mut mgr = manager.write().await;
-                                    if let Err(e) = mgr.start_session(
+                                    if let Err(e) = mgr.start_session_with_settings(
                                         session_id.clone(),
                                         project_path,
                                         cli_type,
                                         db,
                                         app,
+                                        claude_skip_permissions,
+                                        codex_approval_policy,
                                     ).await {
                                         tracing::error!("Failed to start relay session {}: {}", session_id, e);
                                     } else {
@@ -1216,6 +1288,7 @@ pub fn run() {
             commands::get_available_clis,
             commands::send_input,
             commands::send_raw_input,
+            commands::send_tool_approval,
             commands::resize_pty,
             commands::close_session,
             commands::get_messages,

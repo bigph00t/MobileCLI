@@ -4,9 +4,9 @@
 
 MobileCLI lets you manage your AI coding sessions from your phone, tablet, or secondary computer. Start a session on your desktop and continue from wherever you are.
 
-🌐 **Website:** [mobilecli.dev](https://mobilecli.dev)
-📖 **Documentation:** [mobilecli.dev/docs](https://mobilecli.dev/docs)
-⬇️ **Download:** [mobilecli.dev/download](https://mobilecli.dev/download)
+🌐 **Website:** [mobilecli.app](https://mobilecli.app)
+📖 **Documentation:** [mobilecli.app/docs](https://mobilecli.app/docs)
+⬇️ **Download:** [mobilecli.app/download](https://mobilecli.app/download)
 
 ## Features
 
@@ -53,7 +53,7 @@ MobileCLI lets you manage your AI coding sessions from your phone, tablet, or se
 
 ### 1. Download MobileCLI
 
-Download from [mobilecli.dev/download](https://mobilecli.dev/download):
+Download from [mobilecli.app/download](https://mobilecli.app/download):
 - **macOS:** .dmg (Apple Silicon or Intel)
 - **Windows:** .exe installer
 - **Linux:** AppImage or .deb
@@ -87,7 +87,7 @@ For access outside your local network, enable the relay server:
 3. Re-scan the QR code on your mobile (it now includes relay URL)
 4. Access from any network!
 
-[Learn more about relay setup](https://mobilecli.dev/docs/relay-setup)
+[Learn more about relay setup](https://mobilecli.app/docs/relay-setup)
 
 ## Development
 
