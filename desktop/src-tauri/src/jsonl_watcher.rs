@@ -3,9 +3,9 @@
 //! Watches Claude's JSONL files for changes and emits activities via Tauri events.
 //! This provides clean, structured conversation data instead of parsing raw PTY output.
 
-use crate::jsonl::{entry_to_activities, get_jsonl_path, read_jsonl_file, Activity};
+use crate::jsonl::{entry_to_activities_with_context, get_jsonl_path, read_jsonl_file, Activity};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -146,13 +146,19 @@ impl JsonlWatcher {
         // Track UUIDs we've seen to avoid duplicates
         let mut seen_uuids: HashSet<String> = HashSet::new();
 
-        // Initialize seen_uuids with existing entries
+        // Track tool_use_id → toolName mappings for associating ToolResult with ToolUse
+        let mut tool_map: HashMap<String, String> = HashMap::new();
+
+        // Initialize seen_uuids with existing entries and build initial tool_map
         if jsonl_path.exists() {
             if let Ok(entries) = read_jsonl_file(&jsonl_path) {
                 for entry in &entries {
                     if let Some(ref uuid) = entry.uuid {
                         seen_uuids.insert(uuid.clone());
                     }
+                    // Also process the entry to build the initial tool_map
+                    // (without emitting activities)
+                    let _ = entry_to_activities_with_context(entry, &mut tool_map);
                 }
             }
         }
@@ -182,6 +188,7 @@ impl JsonlWatcher {
                                     &app,
                                     &last_entry_count,
                                     &mut seen_uuids,
+                                    &mut tool_map,
                                 );
                             }
                             _ => {}
@@ -193,7 +200,10 @@ impl JsonlWatcher {
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    tracing::warn!("JSONL watcher channel disconnected for session {}", session_id);
+                    tracing::warn!(
+                        "JSONL watcher channel disconnected for session {}",
+                        session_id
+                    );
                     break;
                 }
             }
@@ -209,6 +219,7 @@ impl JsonlWatcher {
         app: &AppHandle,
         last_entry_count: &Arc<AtomicUsize>,
         seen_uuids: &mut HashSet<String>,
+        tool_map: &mut HashMap<String, String>,
     ) {
         if !jsonl_path.exists() {
             return;
@@ -246,7 +257,8 @@ impl JsonlWatcher {
             }
 
             // Convert entry to activities and emit each one
-            let activities = entry_to_activities(entry);
+            // Use context-aware version to track tool_use_id → toolName mappings
+            let activities = entry_to_activities_with_context(entry, tool_map);
 
             for activity in activities {
                 Self::emit_activity(session_id, &activity, app);

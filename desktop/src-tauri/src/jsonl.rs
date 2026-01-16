@@ -7,6 +7,7 @@
 //! instead of parsing raw PTY output.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -231,7 +232,18 @@ impl Activity {
 }
 
 /// Convert a JSONL entry into activities for display
+/// This version doesn't track tool context - use entry_to_activities_with_context for that
 pub fn entry_to_activities(entry: &JsonlEntry) -> Vec<Activity> {
+    let mut tool_map = HashMap::new();
+    entry_to_activities_with_context(entry, &mut tool_map)
+}
+
+/// Convert a JSONL entry into activities for display, with tool context tracking
+/// The tool_map is used to associate ToolResult activities with their corresponding ToolUse toolName
+pub fn entry_to_activities_with_context(
+    entry: &JsonlEntry,
+    tool_map: &mut HashMap<String, String>,
+) -> Vec<Activity> {
     let mut activities = Vec::new();
     let timestamp = entry.timestamp.clone().unwrap_or_default();
     let uuid = entry.uuid.clone();
@@ -253,7 +265,7 @@ pub fn entry_to_activities(entry: &JsonlEntry) -> Vec<Activity> {
                         // Tool results from user entries
                         for block in blocks {
                             if let ContentBlock::ToolResult {
-                                tool_use_id: _,
+                                tool_use_id,
                                 content,
                                 is_error,
                             } = block
@@ -265,17 +277,18 @@ pub fn entry_to_activities(entry: &JsonlEntry) -> Vec<Activity> {
                                 };
 
                                 // Also check toolUseResult for stdout/stderr
-                                let full_content = if let Some(ref tool_result) = entry.tool_use_result {
-                                    if !tool_result.stdout.is_empty() {
-                                        tool_result.stdout.clone()
-                                    } else if !tool_result.stderr.is_empty() {
-                                        tool_result.stderr.clone()
+                                let full_content =
+                                    if let Some(ref tool_result) = entry.tool_use_result {
+                                        if !tool_result.stdout.is_empty() {
+                                            tool_result.stdout.clone()
+                                        } else if !tool_result.stderr.is_empty() {
+                                            tool_result.stderr.clone()
+                                        } else {
+                                            result_content
+                                        }
                                     } else {
                                         result_content
-                                    }
-                                } else {
-                                    result_content
-                                };
+                                    };
 
                                 let activity_type = if *is_error {
                                     ActivityType::ToolResult // Could add error indicator
@@ -283,10 +296,19 @@ pub fn entry_to_activities(entry: &JsonlEntry) -> Vec<Activity> {
                                     ActivityType::ToolResult
                                 };
 
-                                activities.push(
+                                // Look up the tool name from the context map using tool_use_id
+                                let tool_name = tool_map.get(tool_use_id).cloned();
+
+                                let mut activity =
                                     Activity::new(activity_type, full_content, timestamp.clone())
-                                        .with_uuid(uuid.clone()),
-                                );
+                                        .with_uuid(uuid.clone());
+
+                                // Add tool name if we found it in the map
+                                if let Some(name) = tool_name {
+                                    activity = activity.with_tool(name, None);
+                                }
+
+                                activities.push(activity);
                             }
                         }
                     }
@@ -325,10 +347,28 @@ pub fn entry_to_activities(entry: &JsonlEntry) -> Vec<Activity> {
                                 }
                             }
 
-                            ContentBlock::ToolUse { id: _, name, input } => {
+                            ContentBlock::ToolUse { id, name, input } => {
+                                // Record the tool_use_id → name mapping for later ToolResult lookup
+                                tool_map.insert(id.clone(), name.clone());
+
                                 // Format tool call content
                                 let content = format_tool_call(name, input);
                                 let params = serde_json::to_string(input).ok();
+                                let enriched_params = if name == "Task" {
+                                    if let serde_json::Value::Object(mut obj) = input.clone() {
+                                        if let Some(subagent) = obj.get("subagent_type").and_then(|v| v.as_str()) {
+                                            obj.insert("subagent_type".to_string(), serde_json::Value::String(subagent.to_string()));
+                                        }
+                                        if let Some(description) = obj.get("description").and_then(|v| v.as_str()) {
+                                            obj.insert("description".to_string(), serde_json::Value::String(description.to_string()));
+                                        }
+                                        serde_json::to_string(&obj).ok().or(params)
+                                    } else {
+                                        params
+                                    }
+                                } else {
+                                    params
+                                };
 
                                 activities.push(
                                     Activity::new(
@@ -337,7 +377,7 @@ pub fn entry_to_activities(entry: &JsonlEntry) -> Vec<Activity> {
                                         timestamp.clone(),
                                     )
                                     .with_uuid(uuid.clone())
-                                    .with_tool(name.clone(), params),
+                                    .with_tool(name.clone(), enriched_params),
                                 );
                             }
 
@@ -473,7 +513,10 @@ pub fn read_jsonl_file(path: &PathBuf) -> Result<Vec<JsonlEntry>, JsonlError> {
 }
 
 /// Read entries and convert to activities for display
-pub fn read_activities(project_path: &str, conversation_id: &str) -> Result<Vec<Activity>, JsonlError> {
+pub fn read_activities(
+    project_path: &str,
+    conversation_id: &str,
+) -> Result<Vec<Activity>, JsonlError> {
     let path = get_jsonl_path(project_path, conversation_id);
 
     if !path.exists() {
@@ -483,10 +526,7 @@ pub fn read_activities(project_path: &str, conversation_id: &str) -> Result<Vec<
 
     let entries = read_jsonl_file(&path)?;
 
-    let activities: Vec<Activity> = entries
-        .iter()
-        .flat_map(entry_to_activities)
-        .collect();
+    let activities: Vec<Activity> = entries.iter().flat_map(entry_to_activities).collect();
 
     tracing::info!(
         "Converted {} JSONL entries to {} activities",
@@ -566,7 +606,8 @@ mod tests {
 
     #[test]
     fn test_skip_system_entries() {
-        let json = r#"{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:00Z"}"#;
+        let json =
+            r#"{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:00Z"}"#;
         let entry = parse_jsonl_line(json).unwrap();
 
         let activities = entry_to_activities(&entry);

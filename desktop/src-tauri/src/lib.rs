@@ -35,6 +35,25 @@ pub struct AppState {
     pub input_coordinator: Arc<InputCoordinator>,
 }
 
+/// Extract a user-friendly session name from a project path.
+/// Returns the last component of the path (e.g., "/home/user/Desktop" → "Desktop")
+/// Falls back to a timestamp-based name if the path is empty or invalid.
+fn derive_session_name(project_path: &str) -> String {
+    use std::path::Path;
+
+    if project_path.is_empty() {
+        return format!("Session {}", chrono::Utc::now().format("%H:%M:%S"));
+    }
+
+    // Get the last path component
+    Path::new(project_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| format!("Session {}", chrono::Utc::now().format("%H:%M:%S")))
+}
+
 // Tauri commands exposed to frontend
 mod commands {
     use super::*;
@@ -90,7 +109,9 @@ mod commands {
     }
 
     #[tauri::command]
-    pub async fn get_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<SessionInfo>, String> {
+    pub async fn get_sessions(
+        state: tauri::State<'_, AppState>,
+    ) -> Result<Vec<SessionInfo>, String> {
         state
             .db
             .get_all_sessions()
@@ -118,7 +139,7 @@ mod commands {
     ) -> Result<SessionInfo, String> {
         let name = request
             .name
-            .unwrap_or_else(|| format!("Session {}", chrono::Utc::now().format("%H:%M:%S")));
+            .unwrap_or_else(|| derive_session_name(&request.project_path));
 
         // Parse CLI type (default to Claude)
         let cli_type = request
@@ -218,7 +239,11 @@ mod commands {
         // No need to store in DB anymore - JSONL is the source of truth
 
         // Broadcast to WS clients (mobile)
-        tracing::info!("[lib.rs] Emitting new-message for user input: session={}, content={}", session_id, &input);
+        tracing::info!(
+            "[lib.rs] Emitting new-message for user input: session={}, content={}",
+            session_id,
+            &input
+        );
         let _ = app.emit(
             "new-message",
             serde_json::json!({
@@ -239,6 +264,7 @@ mod commands {
 
     #[tauri::command]
     pub async fn send_raw_input(
+        app: tauri::AppHandle,
         state: tauri::State<'_, AppState>,
         session_id: String,
         input: String,
@@ -247,13 +273,40 @@ mod commands {
         manager
             .send_raw_input(&session_id, &input)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        // CRITICAL FIX: If input looks like a tool approval response (1, 2, 3, y, n),
+        // emit waiting-cleared so mobile dismisses its modal immediately.
+        // This catches when desktop user presses a single digit/key to approve a tool.
+        let trimmed = input.trim();
+        if trimmed == "1"
+            || trimmed == "2"
+            || trimmed == "3"
+            || trimmed.eq_ignore_ascii_case("y")
+            || trimmed.eq_ignore_ascii_case("n")
+        {
+            tracing::info!(
+                "Tool approval response detected: {:?} - emitting waiting-cleared",
+                trimmed
+            );
+            let _ = app.emit(
+                "waiting-cleared",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "response": trimmed,
+                }),
+            );
+        }
+
+        Ok(())
     }
 
     /// Send a tool approval response to a session
     /// This handles CLI-specific approval input (numbered options, y/n, arrow keys)
     #[tauri::command]
     pub async fn send_tool_approval(
+        app: tauri::AppHandle,
         state: tauri::State<'_, AppState>,
         session_id: String,
         response: crate::db::ApprovalResponse,
@@ -282,9 +335,22 @@ mod commands {
         // Send to PTY as raw input
         let manager = state.session_manager.read().await;
         manager
-            .send_raw_input(&session_id, input)
+            .send_raw_input(&session_id, input.clone())
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        // CRITICAL FIX: Emit waiting-cleared event so mobile dismisses its modal
+        let _ = app.emit(
+            "waiting-cleared",
+            serde_json::json!({
+                "sessionId": session_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "response": input,
+            }),
+        );
+        tracing::info!("Emitted waiting-cleared for session {}", session_id);
+
+        Ok(())
     }
 
     #[tauri::command]
@@ -339,12 +405,14 @@ mod commands {
         if session.cli_type == "claude" {
             if let Some(ref conversation_id) = session.conversation_id {
                 // Try to read from Claude's JSONL file
-                let jsonl_path = crate::jsonl::get_jsonl_path(&session.project_path, conversation_id);
+                let jsonl_path =
+                    crate::jsonl::get_jsonl_path(&session.project_path, conversation_id);
 
                 if jsonl_path.exists() {
                     tracing::info!(
                         "Reading messages from JSONL for session {}: {:?}",
-                        session_id, jsonl_path
+                        session_id,
+                        jsonl_path
                     );
 
                     match crate::jsonl::read_activities(&session.project_path, conversation_id) {
@@ -360,7 +428,8 @@ mod commands {
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to read JSONL for session {}, falling back to DB: {}",
-                                session_id, e
+                                session_id,
+                                e
                             );
                             // Fall through to database fallback
                         }
@@ -368,7 +437,8 @@ mod commands {
                 } else {
                     tracing::info!(
                         "JSONL file not found for session {}, conversation_id: {}",
-                        session_id, conversation_id
+                        session_id,
+                        conversation_id
                     );
                 }
             }
@@ -488,7 +558,10 @@ mod commands {
 
         // Check if this CLI supports resume
         if !cli_type.supports_resume() {
-            return Err(format!("{} does not support session resume", cli_type.display_name()));
+            return Err(format!(
+                "{} does not support session resume",
+                cli_type.display_name()
+            ));
         }
 
         // Check if session has a conversation_id to resume
@@ -560,6 +633,84 @@ mod commands {
         Ok("localhost".to_string())
     }
 
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct TailscaleStatus {
+        pub installed: bool,
+        pub running: bool,
+        pub tailscale_ip: Option<String>,
+        pub hostname: Option<String>,
+        pub ws_url: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct TailscaleStatusJson {
+        #[serde(rename = "Self")]
+        self_info: Option<TailscaleSelf>,
+    }
+
+    #[derive(Deserialize)]
+    struct TailscaleSelf {
+        #[serde(rename = "HostName")]
+        hostname: Option<String>,
+    }
+
+    #[tauri::command]
+    pub async fn get_tailscale_status() -> Result<TailscaleStatus, String> {
+        use std::process::Command;
+
+        let ws_port = ws::WS_PORT;
+
+        let ip_output = Command::new("tailscale").args(["ip", "-4"]).output();
+        let ip_output = match ip_output {
+            Ok(output) if output.status.success() => output,
+            Ok(_) => {
+                return Ok(TailscaleStatus {
+                    installed: true,
+                    running: false,
+                    tailscale_ip: None,
+                    hostname: None,
+                    ws_url: None,
+                });
+            }
+            Err(_) => {
+                return Ok(TailscaleStatus {
+                    installed: false,
+                    running: false,
+                    tailscale_ip: None,
+                    hostname: None,
+                    ws_url: None,
+                });
+            }
+        };
+
+        let ip_output = String::from_utf8_lossy(&ip_output.stdout);
+        let tailscale_ip = ip_output
+            .lines()
+            .next()
+            .map(|line| line.trim().to_string())
+            .filter(|ip| !ip.is_empty());
+
+        let hostname = Command::new("tailscale")
+            .args(["status", "--json"])
+            .output()
+            .ok()
+            .and_then(|output| serde_json::from_slice::<TailscaleStatusJson>(&output.stdout).ok())
+            .and_then(|status| status.self_info.and_then(|info| info.hostname));
+
+        let ws_url = tailscale_ip
+            .as_ref()
+            .map(|ip| format!("ws://{}:{}", ip, ws_port));
+
+        Ok(TailscaleStatus {
+            installed: true,
+            running: tailscale_ip.is_some(),
+            tailscale_ip,
+            hostname,
+            ws_url,
+        })
+    }
+
     // ========== RELAY COMMANDS (Remote Access with E2E Encryption) ==========
 
     /// Start relay connection and get QR code data
@@ -604,7 +755,10 @@ mod commands {
 
     /// Save application configuration
     #[tauri::command]
-    pub fn set_config(app: tauri::AppHandle, config: crate::config::AppConfig) -> Result<(), String> {
+    pub fn set_config(
+        app: tauri::AppHandle,
+        config: crate::config::AppConfig,
+    ) -> Result<(), String> {
         crate::config::save_config(&app, &config)
     }
 
@@ -672,9 +826,7 @@ mod commands {
 
     /// Disconnect from host
     #[tauri::command]
-    pub async fn disconnect_client(
-        state: tauri::State<'_, AppState>,
-    ) -> Result<(), String> {
+    pub async fn disconnect_client(state: tauri::State<'_, AppState>) -> Result<(), String> {
         let mut conn = state.client_connection.lock().await;
         if let Some(ref mut client) = *conn {
             client.disconnect().await;
@@ -685,9 +837,7 @@ mod commands {
 
     /// Check if connected as client
     #[tauri::command]
-    pub async fn is_client_connected(
-        state: tauri::State<'_, AppState>,
-    ) -> Result<bool, String> {
+    pub async fn is_client_connected(state: tauri::State<'_, AppState>) -> Result<bool, String> {
         let conn = state.client_connection.lock().await;
         Ok(conn.as_ref().map(|c| c.is_connected()).unwrap_or(false))
     }
@@ -996,6 +1146,7 @@ pub fn run() {
                                 timestamp: std::time::Instant::now(),
                             };
 
+
                             let can_execute = coordinator.submit_input(pending).await.unwrap_or(false);
 
                             if can_execute {
@@ -1018,6 +1169,23 @@ pub fn run() {
                                     );
                                 } else {
                                     tracing::info!("Successfully sent input to session {}", sid);
+
+                                    // CRITICAL FIX: For non-raw sends (mobile complete messages),
+                                    // emit an event to clear the desktop frontend's inputBuffer.
+                                    // The PTY already sent Ctrl+U to clear the terminal line,
+                                    // but we need to sync the frontend's tracking state too.
+                                    if !raw {
+                                        let _ = app.emit(
+                                            "input-state",
+                                            serde_json::json!({
+                                                "sessionId": sid,
+                                                "text": "",
+                                                "cursorPosition": 0,
+                                                "senderId": "mobile-clear",
+                                            }),
+                                        );
+                                        tracing::info!("Emitted input-state clear for session {}", sid);
+                                    }
                                 }
                             } else {
                                 tracing::info!("Input from {} queued due to debounce", sender);
@@ -1165,11 +1333,10 @@ pub fn run() {
                         let manager = session_manager_for_relay_create.clone();
                         let db = db_clone5.clone();
                         let app = app_handle5.clone();
+                        // Derive session name before async block (while project_path is still accessible)
+                        let session_name = name.unwrap_or_else(|| derive_session_name(&project_path));
                         tauri::async_runtime::spawn(async move {
-                            // Create session in DB first
-                            let session_name = name.unwrap_or_else(|| {
-                                format!("Session {}", chrono::Utc::now().format("%H:%M:%S"))
-                            });
+                            // Create session in DB
 
                             match db.create_session(&session_name, &project_path, cli_type) {
                                 Ok(session) => {
@@ -1299,6 +1466,7 @@ pub fn run() {
             commands::get_claude_history,
             commands::resume_session,
             commands::get_local_ip,
+            commands::get_tailscale_status,
             // App info commands
             commands::get_version,
             // Relay commands (E2E encrypted remote access)

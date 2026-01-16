@@ -25,17 +25,26 @@ type Tx = mpsc::UnboundedSender<Message>;
 type PeerMap = Arc<RwLock<HashMap<SocketAddr, Tx>>>;
 
 /// Check if a new connection should be accepted based on rate limits
-fn check_connection_limits(peers: &HashMap<SocketAddr, Tx>, new_addr: &SocketAddr) -> Result<(), String> {
+fn check_connection_limits(
+    peers: &HashMap<SocketAddr, Tx>,
+    new_addr: &SocketAddr,
+) -> Result<(), String> {
     // Check total connections
     if peers.len() >= MAX_TOTAL_CONNECTIONS {
-        return Err(format!("Max connections ({}) reached", MAX_TOTAL_CONNECTIONS));
+        return Err(format!(
+            "Max connections ({}) reached",
+            MAX_TOTAL_CONNECTIONS
+        ));
     }
 
     // Check connections per IP
     let ip = new_addr.ip();
     let connections_from_ip = peers.keys().filter(|addr| addr.ip() == ip).count();
     if connections_from_ip >= MAX_CONNECTIONS_PER_IP {
-        return Err(format!("Max connections per IP ({}) reached for {}", MAX_CONNECTIONS_PER_IP, ip));
+        return Err(format!(
+            "Max connections per IP ({}) reached for {}",
+            MAX_CONNECTIONS_PER_IP, ip
+        ));
     }
 
     Ok(())
@@ -68,10 +77,7 @@ fn validate_path(requested_path: &str) -> Result<std::path::PathBuf, String> {
     };
 
     // Ensure path is within home directory (or common safe locations)
-    let allowed_prefixes = [
-        &home,
-        &std::path::PathBuf::from("/tmp"),
-    ];
+    let allowed_prefixes = [&home, &std::path::PathBuf::from("/tmp")];
 
     for prefix in allowed_prefixes.iter() {
         if canonical.starts_with(prefix) {
@@ -84,9 +90,9 @@ fn validate_path(requested_path: &str) -> Result<std::path::PathBuf, String> {
 
 /// File upload security constants
 const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp",  // Images
-    "pdf", "txt", "md", "json",           // Documents
-    "log",                                 // Logs
+    "png", "jpg", "jpeg", "gif", "webp", // Images
+    "pdf", "txt", "md", "json", // Documents
+    "log",  // Logs
 ];
 const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
@@ -177,7 +183,12 @@ async fn bind_with_retry(
                 delay_ms *= 2; // Exponential backoff
             }
             Err(e) => {
-                tracing::error!("Failed to bind to {} after {} attempts: {}", addr, max_retries, e);
+                tracing::error!(
+                    "Failed to bind to {} after {} attempts: {}",
+                    addr,
+                    max_retries,
+                    e
+                );
                 return Err(e.into());
             }
         }
@@ -204,6 +215,8 @@ pub enum ClientMessage {
         text: String,
         #[serde(default)]
         raw: bool,
+        #[serde(default)]
+        client_msg_id: Option<String>,
     },
     CreateSession {
         project_path: String,
@@ -255,6 +268,8 @@ pub enum ClientMessage {
         text: String,
         cursor_position: Option<usize>,
     },
+    /// Heartbeat ping - client sends to check connection health
+    Ping,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +317,8 @@ pub enum ServerMessage {
         content: String,
         tool_name: Option<String>,
         is_complete: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_msg_id: Option<String>,
     },
     PtyOutput {
         session_id: String,
@@ -312,6 +329,14 @@ pub enum ServerMessage {
         timestamp: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         prompt_content: Option<String>,
+    },
+    /// Tool approval was accepted/rejected - dismiss mobile modal
+    WaitingCleared {
+        session_id: String,
+        timestamp: String,
+        /// The response that was sent (e.g., "1", "2", "3", "y", "n")
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response: Option<String>,
     },
     DirectoryListing {
         path: String,
@@ -356,6 +381,8 @@ pub enum ServerMessage {
         /// Cursor position in the input field
         cursor_position: Option<usize>,
     },
+    /// Heartbeat pong - server responds to ping to confirm connection is alive
+    Pong,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -390,7 +417,7 @@ pub struct MessageInfo {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityInfo {
-    pub activity_type: String,  // "tool_start", "tool_result", "text", "user_prompt", "thinking"
+    pub activity_type: String, // "tool_start", "tool_result", "text", "user_prompt", "thinking"
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
@@ -435,7 +462,8 @@ pub async fn start_server(
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             // Send raw output (with ANSI codes) for terminal rendering
             // Fall back to cleaned output if raw not available
-            let output = payload["raw"].as_str()
+            let output = payload["raw"]
+                .as_str()
                 .or_else(|| payload["output"].as_str())
                 .unwrap_or("");
             let msg = ServerMessage::PtyOutput {
@@ -453,13 +481,19 @@ pub async fn start_server(
             let session_id = payload["sessionId"].as_str().unwrap_or("").to_string();
             let role = payload["role"].as_str().unwrap_or("").to_string();
             let content = payload["content"].as_str().unwrap_or("").to_string();
-            tracing::info!("[ws.rs] Broadcasting new-message: session={}, role={}, content={}", session_id, role, content);
+            tracing::info!(
+                "[ws.rs] Broadcasting new-message: session={}, role={}, content={}",
+                session_id,
+                role,
+                content
+            );
             let msg = ServerMessage::NewMessage {
                 session_id,
                 role,
                 content,
                 tool_name: payload["toolName"].as_str().map(String::from),
                 is_complete: payload["isComplete"].as_bool(),
+                client_msg_id: payload["clientMsgId"].as_str().map(String::from),
             };
             let _ = broadcast_tx_clone2.send(msg);
         }
@@ -476,6 +510,20 @@ pub async fn start_server(
             };
             tracing::debug!("Broadcasting waiting-for-input event with prompt content");
             let _ = broadcast_tx_clone3.send(msg);
+        }
+    });
+
+    // Listen for waiting-cleared events (tool approval accepted/rejected - dismiss mobile modal)
+    let broadcast_tx_clone3a = broadcast_tx.clone();
+    app.listen("waiting-cleared", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let msg = ServerMessage::WaitingCleared {
+                session_id: payload["sessionId"].as_str().unwrap_or("").to_string(),
+                timestamp: payload["timestamp"].as_str().unwrap_or("").to_string(),
+                response: payload["response"].as_str().map(|s| s.to_string()),
+            };
+            tracing::info!("Broadcasting waiting-cleared event to mobile clients");
+            let _ = broadcast_tx_clone3a.send(msg);
         }
     });
 
@@ -562,7 +610,10 @@ pub async fn start_server(
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             let msg = ServerMessage::Error {
                 code: "input_failed".to_string(),
-                message: payload["error"].as_str().unwrap_or("Unknown error").to_string(),
+                message: payload["error"]
+                    .as_str()
+                    .unwrap_or("Unknown error")
+                    .to_string(),
             };
             tracing::info!("Broadcasting input-error event to all clients");
             let _ = broadcast_tx_clone7.send(msg);
@@ -592,7 +643,10 @@ pub async fn start_server(
 
             // DEBUG: Log thinking activities
             if activity_type_str == "thinking" {
-                tracing::info!("[WS] Broadcasting THINKING activity: {:?}", payload["content"].as_str().unwrap_or(""));
+                tracing::info!(
+                    "[WS] Broadcasting THINKING activity: {:?}",
+                    payload["content"].as_str().unwrap_or("")
+                );
             }
 
             let msg = ServerMessage::Activity {
@@ -686,7 +740,9 @@ pub async fn start_server(
         let broadcast_rx = broadcast_tx.subscribe();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, peers.clone(), db, app, broadcast_rx).await {
+            if let Err(e) =
+                handle_connection(stream, addr, peers.clone(), db, app, broadcast_rx).await
+            {
                 tracing::error!("Connection error for {}: {}", addr, e);
             }
             // Remove peer on disconnect
@@ -738,7 +794,10 @@ async fn handle_connection(
     let broadcast_task = tokio::spawn(async move {
         while let Ok(msg) = broadcast_rx.recv().await {
             if let Ok(json) = serde_json::to_string(&msg) {
-                tracing::info!("[ws.rs] Forwarding broadcast to client: {} chars", json.len());
+                tracing::info!(
+                    "[ws.rs] Forwarding broadcast to client: {} chars",
+                    json.len()
+                );
                 let _ = tx_clone.send(Message::Text(json));
             }
         }
@@ -817,41 +876,50 @@ async fn handle_client_message(
                 let conversation_id = session.conversation_id.as_deref().unwrap_or(&session_id);
 
                 // Helper to convert activities to MessageInfo
-                let convert_activities = |activities: Vec<crate::jsonl::Activity>, sid: &str| -> Vec<MessageInfo> {
-                    activities
-                        .into_iter()
-                        .filter(|a| a.activity_type != ActivityType::Thinking)
-                        .take(limit_val)
-                        .map(|a| {
-                            let role = match a.activity_type {
-                                ActivityType::UserPrompt => "user".to_string(),
-                                _ => "assistant".to_string(),
-                            };
-                            MessageInfo {
-                                id: a.uuid.unwrap_or_else(|| format!("act_{}", a.timestamp)),
-                                session_id: sid.to_string(),
-                                role,
-                                content: a.content,
-                                tool_name: a.tool_name,
-                                tool_result: None,
-                                timestamp: a.timestamp,
-                            }
-                        })
-                        .collect()
-                };
+                let convert_activities =
+                    |activities: Vec<crate::jsonl::Activity>, sid: &str| -> Vec<MessageInfo> {
+                        activities
+                            .into_iter()
+                            .filter(|a| a.activity_type != ActivityType::Thinking)
+                            .take(limit_val)
+                            .map(|a| {
+                                let role = match a.activity_type {
+                                    ActivityType::UserPrompt => "user".to_string(),
+                                    _ => "assistant".to_string(),
+                                };
+                                MessageInfo {
+                                    id: a.uuid.unwrap_or_else(|| format!("act_{}", a.timestamp)),
+                                    session_id: sid.to_string(),
+                                    role,
+                                    content: a.content,
+                                    tool_name: a.tool_name,
+                                    tool_result: None,
+                                    timestamp: a.timestamp,
+                                }
+                            })
+                            .collect()
+                    };
 
                 match session.cli_type.as_str() {
                     "claude" => {
                         // Claude: JSONL at ~/.claude/projects/{hash}/{session}.jsonl
-                        let jsonl_path = jsonl::get_jsonl_path(&session.project_path, conversation_id);
+                        let jsonl_path =
+                            jsonl::get_jsonl_path(&session.project_path, conversation_id);
                         if jsonl_path.exists() {
                             match jsonl::read_activities(&session.project_path, conversation_id) {
                                 Ok(activities) => {
                                     let messages = convert_activities(activities, &session_id);
-                                    return ServerMessage::Messages { session_id, messages };
+                                    return ServerMessage::Messages {
+                                        session_id,
+                                        messages,
+                                    };
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to read Claude JSONL for session {}: {}", session_id, e);
+                                    tracing::warn!(
+                                        "Failed to read Claude JSONL for session {}: {}",
+                                        session_id,
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -878,18 +946,26 @@ async fn handle_client_message(
                                         })
                                         .collect();
                                     let messages = convert_activities(activities, &session_id);
-                                    return ServerMessage::Messages { session_id, messages };
+                                    return ServerMessage::Messages {
+                                        session_id,
+                                        messages,
+                                    };
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to read Codex JSONL for session {}: {}", session_id, e);
+                                    tracing::warn!(
+                                        "Failed to read Codex JSONL for session {}: {}",
+                                        session_id,
+                                        e
+                                    );
                                 }
                             }
                         }
                     }
                     "gemini" => {
                         // Gemini: JSON at ~/.gemini/tmp/{hash}/chats/session-*.json
-                        if let Some(gemini_path) = gemini::find_session_file(&session.project_path, conversation_id)
-                            .or_else(|| gemini::get_latest_session_file(&session.project_path))
+                        if let Some(gemini_path) =
+                            gemini::find_session_file(&session.project_path, conversation_id)
+                                .or_else(|| gemini::get_latest_session_file(&session.project_path))
                         {
                             match gemini::read_session_file(&gemini_path) {
                                 Ok(session_data) => {
@@ -909,10 +985,17 @@ async fn handle_client_message(
                                         })
                                         .collect();
                                     let messages = convert_activities(activities, &session_id);
-                                    return ServerMessage::Messages { session_id, messages };
+                                    return ServerMessage::Messages {
+                                        session_id,
+                                        messages,
+                                    };
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to read Gemini JSON for session {}: {}", session_id, e);
+                                    tracing::warn!(
+                                        "Failed to read Gemini JSON for session {}: {}",
+                                        session_id,
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -967,7 +1050,8 @@ async fn handle_client_message(
                                     .filter(|a| {
                                         // Keep all activity types - let mobile decide what to show
                                         // Only filter extended thinking blocks (>500 chars)
-                                        if a.activity_type == crate::parser::ActivityType::Thinking {
+                                        if a.activity_type == crate::parser::ActivityType::Thinking
+                                        {
                                             a.content.len() < 500
                                         } else {
                                             true
@@ -979,12 +1063,18 @@ async fn handle_client_message(
                                         let activity_type_str = match a.activity_type {
                                             crate::parser::ActivityType::Thinking => "thinking",
                                             crate::parser::ActivityType::ToolStart => "tool_start",
-                                            crate::parser::ActivityType::ToolResult => "tool_result",
+                                            crate::parser::ActivityType::ToolResult => {
+                                                "tool_result"
+                                            }
                                             crate::parser::ActivityType::Text => "text",
-                                            crate::parser::ActivityType::UserPrompt => "user_prompt",
+                                            crate::parser::ActivityType::UserPrompt => {
+                                                "user_prompt"
+                                            }
                                             crate::parser::ActivityType::FileWrite => "file_write",
                                             crate::parser::ActivityType::FileRead => "file_read",
-                                            crate::parser::ActivityType::BashCommand => "bash_command",
+                                            crate::parser::ActivityType::BashCommand => {
+                                                "bash_command"
+                                            }
                                             crate::parser::ActivityType::CodeDiff => "code_diff",
                                             crate::parser::ActivityType::Progress => "progress",
                                         };
@@ -1007,7 +1097,11 @@ async fn handle_client_message(
                                 };
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to read JSONL activities for session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to read JSONL activities for session {}: {}",
+                                    session_id,
+                                    e
+                                );
                             }
                         }
                     }
@@ -1021,11 +1115,19 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::SendInput { session_id, text, raw } => {
+        ClientMessage::SendInput {
+            session_id,
+            text,
+            raw,
+            client_msg_id,
+        } => {
             let text_bytes: Vec<u8> = text.bytes().collect();
             tracing::info!(
                 "WS SendInput: session={}, text={:?}, text_hex={:02x?}, raw={}",
-                session_id, text, text_bytes, raw
+                session_id,
+                text,
+                text_bytes,
+                raw
             );
 
             // Emit event for PTY module to handle
@@ -1035,6 +1137,7 @@ async fn handle_client_message(
                     "sessionId": session_id,
                     "text": text,
                     "raw": raw,
+                    "clientMsgId": client_msg_id,
                 }),
             );
 
@@ -1050,6 +1153,7 @@ async fn handle_client_message(
                         "role": "user",
                         "content": text,
                         "isComplete": true,
+                        "clientMsgId": client_msg_id,
                     }),
                 );
             }
@@ -1060,10 +1164,17 @@ async fn handle_client_message(
                 content: text,
                 tool_name: None,
                 is_complete: Some(true),
+                client_msg_id,
             }
         }
 
-        ClientMessage::CreateSession { project_path, name, cli_type, claude_skip_permissions, codex_approval_policy } => {
+        ClientMessage::CreateSession {
+            project_path,
+            name,
+            cli_type,
+            claude_skip_permissions,
+            codex_approval_policy,
+        } => {
             // Parse CLI type (default to Claude)
             let parsed_cli_type = cli_type
                 .as_deref()
@@ -1134,9 +1245,15 @@ async fn handle_client_message(
             match db.update_session_status(&session_id, "closed") {
                 Ok(_) => {
                     // Emit event to stop the PTY session
-                    let _ = app.emit("close-session", serde_json::json!({ "sessionId": session_id }));
+                    let _ = app.emit(
+                        "close-session",
+                        serde_json::json!({ "sessionId": session_id }),
+                    );
                     // Broadcast to all clients that this session is closed
-                    let _ = app.emit("session-closed", serde_json::json!({ "sessionId": session_id }));
+                    let _ = app.emit(
+                        "session-closed",
+                        serde_json::json!({ "sessionId": session_id }),
+                    );
                     ServerMessage::SessionClosed {
                         session_id: session_id.clone(),
                     }
@@ -1161,11 +1278,15 @@ async fn handle_client_message(
                     }
 
                     // Check if CLI supports resume
-                    let cli_type = CliType::from_str(&session.cli_type).unwrap_or(CliType::ClaudeCode);
+                    let cli_type =
+                        CliType::from_str(&session.cli_type).unwrap_or(CliType::ClaudeCode);
                     if !cli_type.supports_resume() {
                         return ServerMessage::Error {
                             code: "resume_not_supported".to_string(),
-                            message: format!("{} does not support session resume", cli_type.display_name()),
+                            message: format!(
+                                "{} does not support session resume",
+                                cli_type.display_name()
+                            ),
                         };
                     }
 
@@ -1227,8 +1348,28 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::Subscribe { .. } | ClientMessage::Unsubscribe { .. } => {
-            // Subscription is handled via broadcast for now
+        ClientMessage::Subscribe { session_id } => {
+            // CRITICAL FIX: When mobile subscribes, request the current input state from desktop
+            // This ensures mobile sees any pending input the desktop user has typed
+            let _ = app.emit(
+                "request-input-state",
+                serde_json::json!({
+                    "sessionId": session_id,
+                }),
+            );
+            tracing::info!(
+                "Mobile subscribed to session {}, requesting current input state",
+                session_id
+            );
+
+            ServerMessage::Welcome {
+                server_version: "0.1.0".to_string(),
+                authenticated: true,
+            }
+        }
+
+        ClientMessage::Unsubscribe { .. } => {
+            // Unsubscription doesn't need special handling
             ServerMessage::Welcome {
                 server_version: "0.1.0".to_string(),
                 authenticated: true,
@@ -1237,9 +1378,8 @@ async fn handle_client_message(
 
         ClientMessage::ListDirectory { path } => {
             // List directory contents for remote file browser
-            let target_path = path.unwrap_or_else(|| {
-                std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
-            });
+            let target_path =
+                path.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
 
             // Validate path to prevent directory traversal
             match validate_path(&target_path) {
@@ -1259,18 +1399,17 @@ async fn handle_client_message(
                                     if name.starts_with('.') {
                                         return None;
                                     }
-                                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                                    let is_dir =
+                                        entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                                     Some(DirectoryEntry { name, is_dir })
                                 })
                                 .collect();
 
                             // Sort: directories first, then alphabetically
-                            dir_entries.sort_by(|a, b| {
-                                match (a.is_dir, b.is_dir) {
-                                    (true, false) => std::cmp::Ordering::Less,
-                                    (false, true) => std::cmp::Ordering::Greater,
-                                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                                }
+                            dir_entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                                (true, false) => std::cmp::Ordering::Less,
+                                (false, true) => std::cmp::Ordering::Greater,
+                                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
                             });
 
                             ServerMessage::DirectoryListing {
@@ -1316,8 +1455,12 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::UploadFile { filename, data, mime_type } => {
-            use base64::{Engine as _, engine::general_purpose::STANDARD};
+        ClientMessage::UploadFile {
+            filename,
+            data,
+            mime_type,
+        } => {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
 
             // Decode base64 data
             let decoded = match STANDARD.decode(&data) {
@@ -1361,7 +1504,9 @@ async fn handle_client_message(
                     let path_str = file_path.to_string_lossy().to_string();
                     tracing::info!(
                         "File uploaded: {} ({} bytes, {})",
-                        path_str, decoded.len(), mime_type
+                        path_str,
+                        decoded.len(),
+                        mime_type
                     );
                     ServerMessage::FileUploaded {
                         path: path_str,
@@ -1374,7 +1519,10 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::RenameSession { session_id, new_name } => {
+        ClientMessage::RenameSession {
+            session_id,
+            new_name,
+        } => {
             match db.rename_session(&session_id, &new_name) {
                 Ok(_) => {
                     // Emit event to notify other clients
@@ -1399,7 +1547,10 @@ async fn handle_client_message(
 
         ClientMessage::DeleteSession { session_id } => {
             // First close any active PTY session
-            let _ = app.emit("close-session", serde_json::json!({ "sessionId": session_id }));
+            let _ = app.emit(
+                "close-session",
+                serde_json::json!({ "sessionId": session_id }),
+            );
 
             match db.delete_session(&session_id) {
                 Ok(_) => {
@@ -1416,7 +1567,11 @@ async fn handle_client_message(
                 },
             }
         }
-        ClientMessage::SyncInputState { session_id, text, cursor_position } => {
+        ClientMessage::SyncInputState {
+            session_id,
+            text,
+            cursor_position,
+        } => {
             // Broadcast input state to all other clients (for real-time input sync)
             let _ = app.emit(
                 "input-state",
@@ -1432,6 +1587,10 @@ async fn handle_client_message(
                 text,
                 cursor_position,
             }
+        }
+        ClientMessage::Ping => {
+            // Respond immediately to heartbeat ping
+            ServerMessage::Pong
         }
     }
 }
