@@ -96,7 +96,7 @@ impl Default for AppConfig {
             version: env!("CARGO_PKG_VERSION").to_string(),
             first_run: true,
             relay_urls: vec![
-                "wss://relay.mobilecli.app".to_string(),  // Primary (with SSL via Caddy)
+                "wss://relay.mobilecli.app".to_string(), // Primary (with SSL via Caddy)
             ],
             last_host_url: None,
             last_room_code: None,
@@ -118,8 +118,7 @@ pub fn load_config(app: &AppHandle) -> Result<AppConfig, String> {
 
     // Check if we have saved config
     if let Some(value) = store.get("config") {
-        serde_json::from_value(value.clone())
-            .map_err(|e| format!("Failed to parse config: {}", e))
+        serde_json::from_value(value.clone()).map_err(|e| format!("Failed to parse config: {}", e))
     } else {
         // Return default config for new installations
         Ok(AppConfig::default())
@@ -132,8 +131,8 @@ pub fn save_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
         .store(CONFIG_STORE)
         .map_err(|e| format!("Failed to open config store: {}", e))?;
 
-    let value = serde_json::to_value(config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let value =
+        serde_json::to_value(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
     store.set("config", value);
     store
@@ -166,9 +165,7 @@ pub fn load_encryption_key(app: &AppHandle) -> Result<Option<[u8; 32]>, String> 
         .map_err(|e| format!("Failed to open secrets store: {}", e))?;
 
     if let Some(value) = store.get("encryption_key") {
-        let key_b64 = value
-            .as_str()
-            .ok_or("Encryption key is not a string")?;
+        let key_b64 = value.as_str().ok_or("Encryption key is not a string")?;
 
         let key_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_b64)
             .map_err(|e| format!("Failed to decode encryption key: {}", e))?;

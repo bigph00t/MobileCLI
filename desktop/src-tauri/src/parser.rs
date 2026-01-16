@@ -1,8 +1,8 @@
 // Parser module - Parse and clean Claude Code terminal output
 
+use crate::db::CliType;
 use serde::{Deserialize, Serialize};
 use strip_ansi_escapes::strip;
-use crate::db::CliType;
 
 /// Represents a parsed message from Claude Code output
 /// NOTE: After JSONL redesign, this is primarily used for non-Claude CLIs.
@@ -106,33 +106,72 @@ impl OutputParser {
         match self.cli_type {
             CliType::ClaudeCode => vec![
                 // Claude Code v2.1+ thinking words (updated for latest versions)
-                "Ideating", "Fermenting", "Kneading", "Pollinating", "Fluttering",
-                "Brewing", "Crafting", "Weaving", "Spinning",
-                "Stewing", "Marinating", "Simmering", "Steeping",
-                "Jitterbugging", "Pondering", "Contemplating", "Musing",
-                "Philosophising", "Ruminating", "Deliberating", "Cogitating",
-                "Dilly-dallying", "Levitating",
+                "Ideating",
+                "Fermenting",
+                "Kneading",
+                "Pollinating",
+                "Fluttering",
+                "Brewing",
+                "Crafting",
+                "Weaving",
+                "Spinning",
+                "Stewing",
+                "Marinating",
+                "Simmering",
+                "Steeping",
+                "Jitterbugging",
+                "Pondering",
+                "Contemplating",
+                "Musing",
+                "Philosophising",
+                "Ruminating",
+                "Deliberating",
+                "Cogitating",
+                "Dilly-dallying",
+                "Levitating",
                 // Additional thinking words from newer versions
-                "Galloping", "Gallivanting", "Meandering", "Percolating",
-                "Infusing", "Smooshing", "Coalescing", "Perambulating",
-                "Noodling", "Daydreaming", "Mulling", "Perusing",
-                "thinking", "thought for", "esc to interrupt", "ctrl+c to interrupt",
+                "Galloping",
+                "Gallivanting",
+                "Meandering",
+                "Percolating",
+                "Infusing",
+                "Smooshing",
+                "Coalescing",
+                "Perambulating",
+                "Noodling",
+                "Daydreaming",
+                "Mulling",
+                "Perusing",
+                "thinking",
+                "thought for",
+                "esc to interrupt",
+                "ctrl+c to interrupt",
             ],
             CliType::GeminiCli => vec![
                 // Gemini CLI thinking indicators
-                "Thinking", "thinking...", "Processing",
-                "Analyzing", "Generating", "Working",
+                "Thinking",
+                "thinking...",
+                "Processing",
+                "Analyzing",
+                "Generating",
+                "Working",
                 "esc to cancel",
             ],
             CliType::OpenCode => vec![
                 // OpenCode thinking indicators (similar to Claude)
-                "thinking", "Processing", "Working",
-                "Analyzing", "Generating",
+                "thinking",
+                "Processing",
+                "Working",
+                "Analyzing",
+                "Generating",
             ],
             CliType::Codex => vec![
                 // Codex (OpenAI) thinking indicators
-                "thinking", "Processing", "Working",
-                "Analyzing", "Generating",
+                "thinking",
+                "Processing",
+                "Working",
+                "Analyzing",
+                "Generating",
             ],
         }
     }
@@ -140,10 +179,10 @@ impl OutputParser {
     /// Get CLI-specific response markers (start of response lines)
     fn get_response_markers(&self) -> (char, char) {
         match self.cli_type {
-            CliType::ClaudeCode => ('●', '⎿'),  // Claude uses ● for start, ⎿ for continuation
-            CliType::GeminiCli => ('▶', '│'),   // Gemini uses different markers (adjust as needed)
-            CliType::OpenCode => ('●', '│'),    // OpenCode uses similar markers to Claude
-            CliType::Codex => ('▶', '│'),       // Codex uses similar markers to Gemini
+            CliType::ClaudeCode => ('●', '⎿'), // Claude uses ● for start, ⎿ for continuation
+            CliType::GeminiCli => ('▶', '│'),  // Gemini uses different markers (adjust as needed)
+            CliType::OpenCode => ('●', '│'),   // OpenCode uses similar markers to Claude
+            CliType::Codex => ('▶', '│'),      // Codex uses similar markers to Gemini
         }
     }
 
@@ -170,19 +209,19 @@ impl OutputParser {
         // Also look for permission prompts
 
         let waiting_patterns = [
-            "\n> ",           // Standard prompt
-            "\r\n> ",         // Windows-style
-            "\n❯ ",           // Unicode prompt
-            "\r\n❯ ",         // Unicode Windows-style
-            "\n❯",            // Unicode prompt without trailing space
-            "Allow?",         // Permission prompt
-            "Continue?",      // Continuation prompt
-            "[Y/n]",          // Yes/no prompt
-            "[y/N]",          // Yes/no prompt (default no)
-            "Press Enter",    // Enter prompt
-            "(y/n)",          // Alternative yes/no
-            "(Y/N)",          // Alternative yes/no
-            "Enter to confirm",     // Trust prompt confirmation
+            "\n> ",                   // Standard prompt
+            "\r\n> ",                 // Windows-style
+            "\n❯ ",                   // Unicode prompt
+            "\r\n❯ ",                 // Unicode Windows-style
+            "\n❯",                    // Unicode prompt without trailing space
+            "Allow?",                 // Permission prompt
+            "Continue?",              // Continuation prompt
+            "[Y/n]",                  // Yes/no prompt
+            "[y/N]",                  // Yes/no prompt (default no)
+            "Press Enter",            // Enter prompt
+            "(y/n)",                  // Alternative yes/no
+            "(Y/N)",                  // Alternative yes/no
+            "Enter to confirm",       // Trust prompt confirmation
             "Do you trust the files", // Trust prompt question
         ];
 
@@ -194,7 +233,9 @@ impl OutputParser {
         // Also check if a line ends with just the prompt character
         let ends_with_prompt = text.trim_end().ends_with("❯") || text.trim_end().ends_with(">");
 
-        let is_waiting = starts_with_prompt || ends_with_prompt || waiting_patterns.iter().any(|p| text.contains(p));
+        let is_waiting = starts_with_prompt
+            || ends_with_prompt
+            || waiting_patterns.iter().any(|p| text.contains(p));
 
         // Check if CLI is still thinking - uses CLI-specific patterns
         // Only check CURRENT chunk, not the accumulated buffer
@@ -207,20 +248,30 @@ impl OutputParser {
         // BUT don't finalize if Claude is still thinking
         tracing::info!("check_waiting_for_input: is_waiting={}, is_still_thinking={}, state={:?}, buffer_len={}, seen_content={}",
             is_waiting, is_still_thinking, self.state, self.response_buffer.len(), self.seen_response_content);
-        if is_waiting && !is_still_thinking && (self.state == ParserState::AssistantResponding || self.state == ParserState::WaitingForAssistant) {
+        if is_waiting
+            && !is_still_thinking
+            && (self.state == ParserState::AssistantResponding
+                || self.state == ParserState::WaitingForAssistant)
+        {
             // Check if we have meaningful content in the buffer (lowered threshold to catch short responses)
             let buffer_has_content = self.response_buffer.len() > 20;
 
             if self.seen_response_content || buffer_has_content {
-                tracing::info!("Parser: FINALIZING response. seen_content={}, buffer={} chars",
-                    self.seen_response_content, self.response_buffer.len());
+                tracing::info!(
+                    "Parser: FINALIZING response. seen_content={}, buffer={} chars",
+                    self.seen_response_content,
+                    self.response_buffer.len()
+                );
                 self.finalize_assistant_response();
                 // Keep state as WaitingForAssistant (not Idle) so that subsequent output
                 // (like Claude's text response after tool completion) is still accumulated
                 self.state = ParserState::WaitingForAssistant;
                 self.seen_response_content = false; // Reset for next response
             } else {
-                tracing::info!("Parser: detected prompt but minimal content ({} chars), SKIPPING", self.response_buffer.len());
+                tracing::info!(
+                    "Parser: detected prompt but minimal content ({} chars), SKIPPING",
+                    self.response_buffer.len()
+                );
             }
         } else if is_waiting && is_still_thinking {
             tracing::info!("Parser: detected prompt but Claude is STILL THINKING, not finalizing");
@@ -261,7 +312,8 @@ impl OutputParser {
             self.response_buffer.clone()
         } else {
             // Take the last max_chars characters safely (respecting UTF-8 boundaries)
-            self.response_buffer.chars()
+            self.response_buffer
+                .chars()
                 .rev()
                 .take(max_chars)
                 .collect::<Vec<_>>()
@@ -279,9 +331,9 @@ impl OutputParser {
         }
 
         // UUID pattern (8-4-4-4-12 hex chars)
-        let uuid_regex = regex::Regex::new(
-            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-        ).ok()?;
+        let uuid_regex =
+            regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+                .ok()?;
 
         if let Some(cap) = uuid_regex.find(text) {
             let id = cap.as_str().to_string();
@@ -306,18 +358,28 @@ impl OutputParser {
         let cleaned = String::from_utf8_lossy(&bytes).to_string();
 
         let output_preview: String = cleaned.chars().take(200).collect();
-        tracing::info!("Parser process: state={:?}, len={}, preview={:?}", self.state, cleaned.len(), output_preview);
+        tracing::info!(
+            "Parser process: state={:?}, len={}, preview={:?}",
+            self.state,
+            cleaned.len(),
+            output_preview
+        );
 
         // Check if this chunk contains actual response content (CLI-specific marker)
         // This indicates the CLI has started outputting a real response
         let (start_marker, _) = self.get_response_markers();
         if !self.seen_response_content && cleaned.contains(start_marker) {
-            tracing::debug!("Parser: detected response content marker ({:?})", start_marker);
+            tracing::debug!(
+                "Parser: detected response content marker ({:?})",
+                start_marker
+            );
             self.seen_response_content = true;
         }
 
         // Accumulate output if we're tracking an assistant response
-        if self.state == ParserState::WaitingForAssistant || self.state == ParserState::AssistantResponding {
+        if self.state == ParserState::WaitingForAssistant
+            || self.state == ParserState::AssistantResponding
+        {
             // Start responding mode on first real output
             if self.state == ParserState::WaitingForAssistant && cleaned.len() > 5 {
                 tracing::debug!("Parser: transitioning to AssistantResponding");
@@ -341,12 +403,15 @@ impl OutputParser {
                     "How can I help you?",
                     "I'm here to help.",
                 ];
-                let is_status = status_patterns.iter().any(|&p| {
-                    current_content.trim().eq_ignore_ascii_case(p)
-                });
+                let is_status = status_patterns
+                    .iter()
+                    .any(|&p| current_content.trim().eq_ignore_ascii_case(p));
 
                 // Only emit if we have meaningful new content that's not a status message
-                if !current_content.is_empty() && !is_status && current_content != self.last_emitted_content {
+                if !current_content.is_empty()
+                    && !is_status
+                    && current_content != self.last_emitted_content
+                {
                     // For the first message, emit immediately
                     // For updates, require at least 50 more chars to avoid noise
                     let should_emit = if self.last_emitted_content.is_empty() {
@@ -358,7 +423,10 @@ impl OutputParser {
                     };
 
                     if should_emit {
-                        tracing::info!("Parser: emitting incremental message ({} chars)", current_content.len());
+                        tracing::info!(
+                            "Parser: emitting incremental message ({} chars)",
+                            current_content.len()
+                        );
                         self.pending_message = Some(ParsedMessage {
                             role: "assistant".to_string(),
                             content: current_content.clone(),
@@ -378,14 +446,23 @@ impl OutputParser {
 
     /// Finalize the accumulated assistant response
     fn finalize_assistant_response(&mut self) {
-        tracing::info!("finalize_assistant_response: buffer has {} bytes", self.response_buffer.len());
+        tracing::info!(
+            "finalize_assistant_response: buffer has {} bytes",
+            self.response_buffer.len()
+        );
         // Use char-based truncation to avoid UTF-8 boundary issues
         let preview: String = self.response_buffer.chars().take(500).collect();
-        tracing::info!("finalize_assistant_response: first 500 chars = {:?}", preview);
+        tracing::info!(
+            "finalize_assistant_response: first 500 chars = {:?}",
+            preview
+        );
 
         // First try to extract actual response content (lines starting with ●)
         let actual_content = self.extract_actual_response(&self.response_buffer);
-        tracing::info!("finalize_assistant_response: extract_actual_response returned {} chars", actual_content.len());
+        tracing::info!(
+            "finalize_assistant_response: extract_actual_response returned {} chars",
+            actual_content.len()
+        );
 
         // Fall back to general cleaning if no ● content found
         let content = if !actual_content.is_empty() {
@@ -393,7 +470,10 @@ impl OutputParser {
             actual_content
         } else {
             let cleaned = Self::clean_assistant_content(&self.response_buffer);
-            tracing::info!("finalize_assistant_response: using cleaned content ({} chars)", cleaned.len());
+            tracing::info!(
+                "finalize_assistant_response: using cleaned content ({} chars)",
+                cleaned.len()
+            );
             cleaned
         };
 
@@ -407,12 +487,16 @@ impl OutputParser {
             "I'm here to help.",
         ];
 
-        let is_status_message = status_patterns.iter().any(|&pattern| {
-            content.trim().eq_ignore_ascii_case(pattern)
-        });
+        let is_status_message = status_patterns
+            .iter()
+            .any(|&pattern| content.trim().eq_ignore_ascii_case(pattern));
 
         // Only create a message if there's actual content and it's not a status message
-        tracing::info!("finalize_assistant_response: content is_empty={}, is_status={}", content.is_empty(), is_status_message);
+        tracing::info!(
+            "finalize_assistant_response: content is_empty={}, is_status={}",
+            content.is_empty(),
+            is_status_message
+        );
         if !content.is_empty() && !is_status_message {
             self.pending_message = Some(ParsedMessage {
                 role: "assistant".to_string(),
@@ -420,12 +504,28 @@ impl OutputParser {
                 tool_name: None,
                 is_complete: true,
             });
-            let preview: String = self.pending_message.as_ref().unwrap().content.chars().take(100).collect();
-            tracing::info!("finalize_assistant_response: SET pending_message {} chars, preview: {:?}", self.pending_message.as_ref().unwrap().content.len(), preview);
+            let preview: String = self
+                .pending_message
+                .as_ref()
+                .unwrap()
+                .content
+                .chars()
+                .take(100)
+                .collect();
+            tracing::info!(
+                "finalize_assistant_response: SET pending_message {} chars, preview: {:?}",
+                self.pending_message.as_ref().unwrap().content.len(),
+                preview
+            );
         } else if is_status_message {
-            tracing::info!("finalize_assistant_response: filtered status message: {}", content.trim());
+            tracing::info!(
+                "finalize_assistant_response: filtered status message: {}",
+                content.trim()
+            );
         } else {
-            tracing::info!("finalize_assistant_response: content was empty, NOT setting pending_message");
+            tracing::info!(
+                "finalize_assistant_response: content was empty, NOT setting pending_message"
+            );
         }
 
         self.response_buffer.clear();
@@ -440,7 +540,11 @@ impl OutputParser {
 
         // Debug: Log what we're extracting from
         let raw_preview: String = raw.chars().take(300).collect();
-        tracing::info!("extract_actual_response: processing {} chars, preview: {:?}", raw.len(), raw_preview);
+        tracing::info!(
+            "extract_actual_response: processing {} chars, preview: {:?}",
+            raw.len(),
+            raw_preview
+        );
 
         for line in raw.lines() {
             let trimmed = line.trim();
@@ -452,7 +556,10 @@ impl OutputParser {
 
                 // Skip tool invocation lines (e.g., "Explore(Explore MobileCLI...)")
                 // Don't change in_response state - we want to capture text that comes after tool output
-                if content.contains('(') && content.contains(')') && content.starts_with(char::is_uppercase) {
+                if content.contains('(')
+                    && content.contains(')')
+                    && content.starts_with(char::is_uppercase)
+                {
                     // Don't set in_response = false here - there might be text response after tool output
                     in_hook_error = false;
                     continue;
@@ -522,8 +629,12 @@ impl OutputParser {
         }
 
         let result = lines.join("\n").trim().to_string();
-        tracing::info!("extract_actual_response: extracted {} lines, {} chars: {:?}",
-            lines.len(), result.len(), result.chars().take(100).collect::<String>());
+        tracing::info!(
+            "extract_actual_response: extracted {} lines, {} chars: {:?}",
+            lines.len(),
+            result.len(),
+            result.chars().take(100).collect::<String>()
+        );
         result
     }
 
@@ -591,13 +702,17 @@ impl OutputParser {
                 }
 
                 // Filter out separator lines (dashes, underscores)
-                if trimmed.chars().all(|c| c == '─' || c == '-' || c == '_' || c == '═') {
+                if trimmed
+                    .chars()
+                    .all(|c| c == '─' || c == '-' || c == '_' || c == '═')
+                {
                     return false;
                 }
 
                 // Filter out spinner characters
-                let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-                                     '·', '*', '✢', '✶', '✻', '✽'];
+                let spinner_chars = [
+                    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '·', '*', '✢', '✶', '✻', '✽',
+                ];
                 if spinner_chars.iter().any(|&c| trimmed.starts_with(c))
                     && (trimmed.contains("Fermenting") || trimmed.len() < 3)
                 {
@@ -628,7 +743,6 @@ impl OutputParser {
 
     // NOTE: reset() was removed in JSONL redesign Phase 6.
     // Parser state is managed implicitly through user_sent_input() and process().
-
 }
 
 impl Default for OutputParser {
@@ -698,7 +812,9 @@ This is my response.
         parser.user_sent_input();
 
         // Process enough text to meet the buffer threshold
-        parser.process("Some response text that is long enough to meet the 20 char threshold for finalization");
+        parser.process(
+            "Some response text that is long enough to meet the 20 char threshold for finalization",
+        );
 
         // Need to wait for the 500ms debounce timeout
         std::thread::sleep(std::time::Duration::from_millis(550));
@@ -706,7 +822,11 @@ This is my response.
         // Check prompt detection patterns
         let result = parser.check_waiting_for_input("\n> ");
         // The function returns true on transition AND with sufficient elapsed time
-        assert!(result || parser.is_waiting_for_input() || *parser.state() == ParserState::WaitingForAssistant);
+        assert!(
+            result
+                || parser.is_waiting_for_input()
+                || *parser.state() == ParserState::WaitingForAssistant
+        );
     }
 
     #[test]

@@ -259,11 +259,17 @@ pub fn message_to_activities(message: &GeminiMessage) -> Vec<Activity> {
             for thought in &message.thoughts {
                 let thought_text = thought.description.clone().unwrap_or_default();
                 if !thought_text.is_empty() {
-                    let subject = thought.subject.clone().unwrap_or_else(|| "Thinking".to_string());
+                    let subject = thought
+                        .subject
+                        .clone()
+                        .unwrap_or_else(|| "Thinking".to_string());
                     activities.push(Activity::new(
                         ActivityType::Thinking,
                         format!("{}: {}", subject, thought_text),
-                        thought.timestamp.clone().unwrap_or_else(|| timestamp.clone()),
+                        thought
+                            .timestamp
+                            .clone()
+                            .unwrap_or_else(|| timestamp.clone()),
                     ));
                 }
             }

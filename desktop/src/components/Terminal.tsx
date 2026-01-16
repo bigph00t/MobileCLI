@@ -1,9 +1,103 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
-import { Terminal as XTerm } from '@xterm/xterm';
+import { Terminal as XTerm, ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+
+// Terminal theme presets
+export type TerminalThemeName = 'classic' | 'tokyo-night' | 'light';
+
+export const TERMINAL_THEMES: Record<TerminalThemeName, ITheme> = {
+  // Classic black/white terminal (default)
+  classic: {
+    background: '#000000',
+    foreground: '#ffffff',
+    cursor: '#ffffff',
+    cursorAccent: '#000000',
+    selectionBackground: '#444444',
+    black: '#000000',
+    red: '#ff5555',
+    green: '#55ff55',
+    yellow: '#ffff55',
+    blue: '#5555ff',
+    magenta: '#ff55ff',
+    cyan: '#55ffff',
+    white: '#ffffff',
+    brightBlack: '#555555',
+    brightRed: '#ff5555',
+    brightGreen: '#55ff55',
+    brightYellow: '#ffff55',
+    brightBlue: '#5555ff',
+    brightMagenta: '#ff55ff',
+    brightCyan: '#55ffff',
+    brightWhite: '#ffffff',
+  },
+  // Tokyo Night theme (blue/purple)
+  'tokyo-night': {
+    background: '#1a1b26',
+    foreground: '#a9b1d6',
+    cursor: '#c0caf5',
+    cursorAccent: '#1a1b26',
+    selectionBackground: '#33467c',
+    black: '#15161e',
+    red: '#f7768e',
+    green: '#9ece6a',
+    yellow: '#e0af68',
+    blue: '#7aa2f7',
+    magenta: '#bb9af7',
+    cyan: '#7dcfff',
+    white: '#a9b1d6',
+    brightBlack: '#414868',
+    brightRed: '#f7768e',
+    brightGreen: '#9ece6a',
+    brightYellow: '#e0af68',
+    brightBlue: '#7aa2f7',
+    brightMagenta: '#bb9af7',
+    brightCyan: '#7dcfff',
+    brightWhite: '#c0caf5',
+  },
+  // Light mode
+  light: {
+    background: '#ffffff',
+    foreground: '#1f2937',
+    cursor: '#1f2937',
+    cursorAccent: '#ffffff',
+    selectionBackground: '#bfdbfe',
+    black: '#1f2937',
+    red: '#dc2626',
+    green: '#16a34a',
+    yellow: '#ca8a04',
+    blue: '#2563eb',
+    magenta: '#9333ea',
+    cyan: '#0891b2',
+    white: '#f3f4f6',
+    brightBlack: '#6b7280',
+    brightRed: '#ef4444',
+    brightGreen: '#22c55e',
+    brightYellow: '#eab308',
+    brightBlue: '#3b82f6',
+    brightMagenta: '#a855f7',
+    brightCyan: '#06b6d4',
+    brightWhite: '#ffffff',
+  },
+};
+
+// Get current theme from localStorage (default: classic)
+export function getCurrentTerminalTheme(): TerminalThemeName {
+  const saved = localStorage.getItem('terminalTheme');
+  if (saved && saved in TERMINAL_THEMES) {
+    return saved as TerminalThemeName;
+  }
+  return 'classic';
+}
+
+// Save theme to localStorage
+export function setTerminalTheme(theme: TerminalThemeName) {
+  localStorage.setItem('terminalTheme', theme);
+  // Dispatch custom event so terminals can update
+  window.dispatchEvent(new CustomEvent('terminal-theme-change', { detail: theme }));
+}
 
 interface TerminalProps {
   sessionId: string;
@@ -80,6 +174,31 @@ export function disposeTerminal(sessionId: string) {
 export default function Terminal({ sessionId, onData }: TerminalProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const onDataRef = useRef(onData);
+  const [themeName, setThemeName] = useState<TerminalThemeName>(getCurrentTerminalTheme);
+
+  // Listen for theme changes and update all terminals
+  useEffect(() => {
+    const handleThemeChange = (event: CustomEvent<TerminalThemeName>) => {
+      const newTheme = event.detail;
+      setThemeName(newTheme);
+      const theme = TERMINAL_THEMES[newTheme];
+
+      // Update all terminal instances
+      terminals.forEach((instance) => {
+        if (instance.term) {
+          instance.term.options.theme = theme;
+        }
+        if (instance.container) {
+          instance.container.style.backgroundColor = theme.background || '#000000';
+        }
+      });
+    };
+
+    window.addEventListener('terminal-theme-change', handleThemeChange as EventListener);
+    return () => {
+      window.removeEventListener('terminal-theme-change', handleThemeChange as EventListener);
+    };
+  }, []);
 
   // Keep onData ref updated AND sync to terminal instance
   useEffect(() => {
@@ -150,36 +269,21 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
       container.style.display = 'block';
       wrapper.appendChild(container);
 
+      // Get current theme
+      const currentTheme = getCurrentTerminalTheme();
+      const theme = TERMINAL_THEMES[currentTheme];
+
       const term = new XTerm({
         cursorBlink: true,
         fontSize: 13,
         fontFamily: 'JetBrains Mono, Menlo, Monaco, "Courier New", monospace',
-        theme: {
-          background: '#1a1b26',
-          foreground: '#a9b1d6',
-          cursor: '#c0caf5',
-          cursorAccent: '#1a1b26',
-          selectionBackground: '#33467c',
-          black: '#15161e',
-          red: '#f7768e',
-          green: '#9ece6a',
-          yellow: '#e0af68',
-          blue: '#7aa2f7',
-          magenta: '#bb9af7',
-          cyan: '#7dcfff',
-          white: '#a9b1d6',
-          brightBlack: '#414868',
-          brightRed: '#f7768e',
-          brightGreen: '#9ece6a',
-          brightYellow: '#e0af68',
-          brightBlue: '#7aa2f7',
-          brightMagenta: '#bb9af7',
-          brightCyan: '#7dcfff',
-          brightWhite: '#c0caf5',
-        },
+        theme,
         scrollback: 10000,
         allowProposedApi: true,
       });
+
+      // Set container background to match theme
+      container.style.backgroundColor = theme.background || '#000000';
 
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
@@ -411,12 +515,31 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
     // Use capture phase to intercept before other handlers
     document.addEventListener('keydown', handleGlobalKeyDown, true);
 
+    // Handle theme changes
+    const handleThemeChange = (e: CustomEvent<TerminalThemeName>) => {
+      const newTheme = TERMINAL_THEMES[e.detail];
+      if (!newTheme) return;
+
+      // Update all terminal instances with the new theme
+      terminals.forEach((inst) => {
+        if (inst.initialized && inst.term) {
+          inst.term.options.theme = newTheme;
+          // Update container background too
+          if (inst.container) {
+            inst.container.style.backgroundColor = newTheme.background || '#000000';
+          }
+        }
+      });
+    };
+    window.addEventListener('terminal-theme-change', handleThemeChange as EventListener);
+
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('focus', handleWindowFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       document.removeEventListener('keydown', handleGlobalKeyDown, true);
+      window.removeEventListener('terminal-theme-change', handleThemeChange as EventListener);
 
       // Hide this terminal's container when unmounting (but don't remove it)
       const inst = terminals.get(sessionId);
@@ -484,6 +607,38 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
     };
   }, [sessionId]);
 
+  // Listen for input state requests from mobile clients (when they subscribe to a session)
+  // This ensures mobile sees any pending input the desktop user has typed
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setupListener = async () => {
+      unlisten = await listen<{ sessionId: string }>(
+        'request-input-state',
+        (event) => {
+          // Only handle events for this session
+          if (event.payload.sessionId !== sessionId) return;
+
+          const instance = terminals.get(sessionId);
+          if (!instance?.initialized) return;
+
+          console.log('[Terminal] Received request-input-state, sending current inputBuffer:', instance.inputBuffer);
+
+          // Emit current input state so mobile can sync
+          emitInputState(sessionId, instance.inputBuffer, instance.cursorPosition);
+        }
+      );
+    };
+
+    setupListener();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [sessionId]);
+
   // Click handler to ensure terminal focus
   const handleClick = useCallback(() => {
     const instance = terminals.get(sessionId);
@@ -525,7 +680,7 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
     <div
       ref={wrapperRef}
       className="w-full h-full terminal-wrapper"
-      style={{ backgroundColor: '#1a1b26', padding: '0' }}
+      style={{ backgroundColor: TERMINAL_THEMES[themeName].background, padding: '0' }}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       onMouseEnter={handleMouseEnter}

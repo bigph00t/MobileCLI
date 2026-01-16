@@ -3,6 +3,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../hooks/useSession';
+import { getCurrentTerminalTheme, setTerminalTheme, TERMINAL_THEMES, type TerminalThemeName } from './Terminal';
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -13,6 +14,14 @@ interface RelayQrData {
   roomCode: string;
   key: string;
   connected: boolean;
+}
+
+interface TailscaleStatus {
+  installed: boolean;
+  running: boolean;
+  tailscaleIp: string | null;
+  hostname: string | null;
+  wsUrl: string | null;
 }
 
 type RelayConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
@@ -29,13 +38,15 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [wsReady, setWsReady] = useState<boolean>(false);
   const [wsError, setWsError] = useState<string | null>(null);
   const [defaultCli, setDefaultCli] = useState<string>('claude');
-  const [activeTab, setActiveTab] = useState<'local' | 'relay'>('local');
+  const [activeTab, setActiveTab] = useState<'local' | 'relay' | 'tailscale' | 'appearance'>('local');
+  const [terminalTheme, setCurrentTerminalTheme] = useState<TerminalThemeName>(getCurrentTerminalTheme());
   const [relay, setRelay] = useState<RelayQrData | null>(null);
   const [relayStarting, setRelayStarting] = useState(false);
   const [relayError, setRelayError] = useState<string | null>(null);
   const [relayStatus, setRelayStatus] = useState<RelayConnectionStatus>('disconnected');
   const [customRelayUrl, setCustomRelayUrl] = useState<string>('');
   const [showAdvancedRelay, setShowAdvancedRelay] = useState(false);
+  const [tailscale, setTailscale] = useState<TailscaleStatus | null>(null);
   const { availableClis, fetchAvailableClis } = useSessionStore();
 
   useEffect(() => {
@@ -47,6 +58,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     checkRelayStatus();
     // Fetch available CLIs
     fetchAvailableClis();
+    // Check Tailscale status
+    getTailscaleStatus();
     // Load saved default CLI
     const saved = localStorage.getItem('defaultCli');
     if (saved) setDefaultCli(saved);
@@ -128,6 +141,16 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   };
 
+  const getTailscaleStatus = async () => {
+    try {
+      const status = await invoke<TailscaleStatus>('get_tailscale_status');
+      setTailscale(status);
+    } catch (e) {
+      console.error('Failed to get tailscale status:', e);
+      setTailscale(null);
+    }
+  };
+
   const startRelay = async () => {
     setRelayStarting(true);
     setRelayError(null);
@@ -154,33 +177,45 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   // Generate relay QR code data (includes room code and encryption key)
   // Uses URL format that mobile expects: mobilecli://relay?url=...&room=...&key=...
-  const getRelayQrValue = () => {
-    if (!relay) return '';
-    const params = new URLSearchParams({
-      url: relay.url,
-      room: relay.roomCode,
-      key: relay.key,
-    });
-    return `mobilecli://relay?${params.toString()}`;
-  };
+const getRelayQrValue = () => {
+  if (!relay) return '';
+  const params = new URLSearchParams({
+    url: relay.url,
+    room: relay.roomCode,
+    key: relay.key,
+  });
+  return `mobilecli://relay?${params.toString()}`;
+};
+
+const getTailscaleQrValue = () => {
+  if (!tailscale?.wsUrl) return '';
+  const params = new URLSearchParams({ url: tailscale.wsUrl });
+  return `mobilecli://tailscale?${params.toString()}`;
+};
+
 
   const handleDefaultCliChange = (cliId: string) => {
     setDefaultCli(cliId);
     localStorage.setItem('defaultCli', cliId);
   };
 
+  const handleThemeChange = (theme: TerminalThemeName) => {
+    setTerminalTheme(theme);
+    setCurrentTerminalTheme(theme);
+  };
+
   // Load custom relay URL from config
   const loadCustomRelayUrl = async () => {
     try {
-      const config = await invoke<{ relay_urls: string[] }>('get_config');
-      if (config.relay_urls && config.relay_urls.length > 0) {
-        const url = config.relay_urls[0];
-        // Only show as custom if it's not the default
-        if (url !== 'wss://relay.mobilecli.app') {
-          setCustomRelayUrl(url);
-          setShowAdvancedRelay(true);
+        const config = await invoke<{ relay_urls: string[] }>('get_config');
+        if (config.relay_urls && config.relay_urls.length > 0) {
+          const url = config.relay_urls[0];
+          if (url !== 'wss://relay.mobilecli.app') {
+            setCustomRelayUrl(url);
+            setShowAdvancedRelay(true);
+          }
         }
-      }
+
     } catch (e) {
       console.error('Failed to load config:', e);
     }
@@ -210,7 +245,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#414868]">
           <h2 className="text-lg font-semibold text-[#c0caf5]">
-            Connection Settings
+            Settings
           </h2>
           <button
             onClick={onClose}
@@ -254,6 +289,26 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                   : 'bg-red-500'
               }`} />
             )}
+          </button>
+          <button
+            onClick={() => setActiveTab('tailscale')}
+            className={`flex-1 px-3 py-3 text-sm font-medium transition-colors ${
+              activeTab === 'tailscale'
+                ? 'text-[#7aa2f7] border-b-2 border-[#7aa2f7]'
+                : 'text-[#565f89] hover:text-[#a9b1d6]'
+            }`}
+          >
+            Tailscale
+          </button>
+          <button
+            onClick={() => setActiveTab('appearance')}
+            className={`flex-1 px-3 py-3 text-sm font-medium transition-colors ${
+              activeTab === 'appearance'
+                ? 'text-[#7aa2f7] border-b-2 border-[#7aa2f7]'
+                : 'text-[#565f89] hover:text-[#a9b1d6]'
+            }`}
+          >
+            Appearance
           </button>
         </div>
 
@@ -422,7 +477,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </ol>
               </div>
             </>
-          ) : (
+          ) : activeTab === 'relay' ? (
             <>
               {/* Relay Connection */}
               {!relay ? (
@@ -634,7 +689,206 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </>
               )}
             </>
-          )}
+          ) : activeTab === 'tailscale' ? (
+            <>
+              <div className="flex flex-col items-center mb-6">
+                <div className="w-16 h-16 rounded-full bg-[#1a1b26] flex items-center justify-center mb-4">
+                  <svg className="w-8 h-8 text-[#7dcfff]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7l9-4 9 4-9 4-9-4zm0 6l9 4 9-4m-9 4v6" />
+                  </svg>
+                </div>
+                <h3 className="text-[#c0caf5] font-medium mb-2">Tailscale Connection</h3>
+                <p className="text-sm text-[#565f89] text-center mb-4">
+                  Connect over your Tailnet with a private, encrypted tunnel.
+                </p>
+              </div>
+
+              {tailscale?.running && tailscale.wsUrl ? (
+                <>
+                  <div className="mb-6 flex flex-col items-center">
+                    <p className="text-sm text-[#a9b1d6] mb-4 text-center">
+                      Scan this QR code with MobileCLI to connect via Tailscale
+                    </p>
+                    <div className="bg-white p-4 rounded-lg">
+                      <QRCodeCanvas
+                        value={getTailscaleQrValue()}
+                        size={200}
+                        level="M"
+                        bgColor="#ffffff"
+                        fgColor="#1a1b26"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-xs font-medium text-[#565f89] uppercase tracking-wide">
+                        Tailscale WebSocket URL
+                      </label>
+                      <div className="mt-1 flex items-center gap-2">
+                        <code className="flex-1 px-3 py-2 bg-[#1a1b26] border border-[#414868]/50 rounded text-sm font-mono text-[#7dcfff]">
+                          {tailscale.wsUrl}
+                        </code>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(tailscale.wsUrl || '')}
+                          className="px-3 py-2 bg-[#414868] hover:bg-[#565f89] rounded text-sm text-[#c0caf5] transition-colors"
+                          title="Copy to clipboard"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-xs font-medium text-[#565f89] uppercase tracking-wide">
+                          Tailnet IP
+                        </label>
+                        <p className="mt-1 text-sm font-mono text-[#c0caf5]">
+                          {tailscale.tailscaleIp || 'Unknown'}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-[#565f89] uppercase tracking-wide">
+                          Hostname
+                        </label>
+                        <p className="mt-1 text-sm font-mono text-[#c0caf5]">
+                          {tailscale.hostname || 'Unknown'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 p-4 bg-[#1a1b26] rounded-lg border border-[#414868]/50">
+                    <h3 className="text-sm font-medium text-[#c0caf5] mb-2">How to Connect</h3>
+                    <ol className="text-xs text-[#a9b1d6] space-y-1 list-decimal list-inside">
+                      <li>Join the same Tailnet on your phone</li>
+                      <li>Open MobileCLI and scan the QR code</li>
+                      <li>Stay on Tailscale for private access anywhere</li>
+                    </ol>
+                  </div>
+                </>
+              ) : (
+                <div className="p-4 bg-[#1a1b26] rounded-lg border border-[#414868]/50">
+                  <p className="text-sm text-[#a9b1d6] mb-3">
+                    {tailscale?.installed
+                      ? 'Tailscale is installed but not running yet.'
+                      : 'Tailscale is not installed on this machine yet.'}
+                  </p>
+                  <ul className="text-xs text-[#565f89] space-y-1 list-disc list-inside">
+                    <li>Install and sign in to Tailscale</li>
+                    <li>Make sure the desktop is connected to your Tailnet</li>
+                    <li>Return here to scan the QR code</li>
+                  </ul>
+                  <button
+                    onClick={() => window.open('https://tailscale.com/download', '_blank')}
+                    className="mt-4 w-full px-4 py-2 bg-[#414868] hover:bg-[#565f89] rounded text-sm text-[#c0caf5] transition-colors"
+                  >
+                    Install Tailscale
+                  </button>
+                </div>
+              )}
+            </>
+          ) : activeTab === 'appearance' ? (
+            <>
+              {/* Terminal Theme */}
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-medium text-[#565f89] uppercase tracking-wide">
+                    Terminal Theme
+                  </label>
+                  <p className="text-xs text-[#565f89] mt-1 mb-3">
+                    Choose your preferred terminal appearance
+                  </p>
+                  <div className="grid grid-cols-3 gap-3">
+                    {/* Classic Theme */}
+                    <button
+                      onClick={() => handleThemeChange('classic')}
+                      className={`p-3 rounded-lg border transition-all ${
+                        terminalTheme === 'classic'
+                          ? 'border-[#7aa2f7] bg-[#1a1b26]'
+                          : 'border-[#414868] bg-[#1a1b26] hover:border-[#565f89]'
+                      }`}
+                    >
+                      <div
+                        className="w-full h-16 rounded mb-2 border border-gray-700 flex items-center justify-center"
+                        style={{ backgroundColor: TERMINAL_THEMES.classic.background }}
+                      >
+                        <span style={{ color: TERMINAL_THEMES.classic.foreground, fontFamily: 'monospace', fontSize: '10px' }}>
+                          $ _
+                        </span>
+                      </div>
+                      <span className={`text-xs font-medium ${
+                        terminalTheme === 'classic' ? 'text-[#7aa2f7]' : 'text-[#a9b1d6]'
+                      }`}>
+                        Terminal
+                      </span>
+                    </button>
+
+                    {/* Tokyo Night Theme */}
+                    <button
+                      onClick={() => handleThemeChange('tokyo-night')}
+                      className={`p-3 rounded-lg border transition-all ${
+                        terminalTheme === 'tokyo-night'
+                          ? 'border-[#7aa2f7] bg-[#1a1b26]'
+                          : 'border-[#414868] bg-[#1a1b26] hover:border-[#565f89]'
+                      }`}
+                    >
+                      <div
+                        className="w-full h-16 rounded mb-2 border border-gray-700 flex items-center justify-center"
+                        style={{ backgroundColor: TERMINAL_THEMES['tokyo-night'].background }}
+                      >
+                        <span style={{ color: TERMINAL_THEMES['tokyo-night'].foreground, fontFamily: 'monospace', fontSize: '10px' }}>
+                          $ _
+                        </span>
+                      </div>
+                      <span className={`text-xs font-medium ${
+                        terminalTheme === 'tokyo-night' ? 'text-[#7aa2f7]' : 'text-[#a9b1d6]'
+                      }`}>
+                        Tokyo Night
+                      </span>
+                    </button>
+
+                    {/* Light Theme */}
+                    <button
+                      onClick={() => handleThemeChange('light')}
+                      className={`p-3 rounded-lg border transition-all ${
+                        terminalTheme === 'light'
+                          ? 'border-[#7aa2f7] bg-[#1a1b26]'
+                          : 'border-[#414868] bg-[#1a1b26] hover:border-[#565f89]'
+                      }`}
+                    >
+                      <div
+                        className="w-full h-16 rounded mb-2 border border-gray-300 flex items-center justify-center"
+                        style={{ backgroundColor: TERMINAL_THEMES.light.background }}
+                      >
+                        <span style={{ color: TERMINAL_THEMES.light.foreground, fontFamily: 'monospace', fontSize: '10px' }}>
+                          $ _
+                        </span>
+                      </div>
+                      <span className={`text-xs font-medium ${
+                        terminalTheme === 'light' ? 'text-[#7aa2f7]' : 'text-[#a9b1d6]'
+                      }`}>
+                        Light
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Theme Info */}
+                <div className="mt-6 p-4 bg-[#1a1b26] rounded-lg border border-[#414868]/50">
+                  <h3 className="text-sm font-medium text-[#c0caf5] mb-2">
+                    Theme Settings
+                  </h3>
+                  <ul className="text-xs text-[#a9b1d6] space-y-1 list-disc list-inside">
+                    <li><strong>Terminal:</strong> Classic black & white terminal</li>
+                    <li><strong>Tokyo Night:</strong> Dark blue theme with purple accents</li>
+                    <li><strong>Light:</strong> Light mode for bright environments</li>
+                  </ul>
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </div>

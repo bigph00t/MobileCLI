@@ -30,7 +30,10 @@ export function HostSetupStep({ onNext, onBack }: HostSetupStepProps) {
     // Get Tailscale status
     invoke<TailscaleStatus>('get_tailscale_status')
       .then(setTailscale)
-      .catch(console.error);
+      .catch((err) => {
+        console.error(err);
+        setTailscale(null);
+      });
   }, []);
 
   const localWsUrl = `ws://${localIp}:${wsPort}`;

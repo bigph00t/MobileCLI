@@ -30,10 +30,18 @@ export interface Message {
   isStreaming?: boolean;
 }
 
+export interface WaitingState {
+  sessionId: string;
+  waitType: 'tool_approval' | 'awaiting_response' | null;
+  promptContent?: string;
+  timestamp: string;
+}
+
 interface SessionState {
   sessions: Session[];
   activeSessionId: string | null;
   messages: Record<string, Message[]>; // sessionId -> messages
+  waitingStates: Record<string, WaitingState>; // sessionId -> waiting state
   availableClis: CliInfo[];
   isLoading: boolean;
   error: string | null;
@@ -49,12 +57,14 @@ interface SessionState {
   addMessage: (sessionId: string, message: Message) => void;
   updateMessage: (messageId: string, content: string) => void;
   sendInput: (sessionId: string, input: string) => Promise<void>;
+  setWaitingState: (sessionId: string, state: WaitingState | null) => void;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   messages: {},
+  waitingStates: {},
   availableClis: [],
   isLoading: false,
   error: null,
@@ -208,5 +218,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (e) {
       set({ error: String(e) });
     }
+  },
+
+  setWaitingState: (sessionId, state) => {
+    set((current) => {
+      if (state === null) {
+        // Remove the waiting state
+        const { [sessionId]: _, ...rest } = current.waitingStates;
+        return { waitingStates: rest };
+      }
+      return {
+        waitingStates: { ...current.waitingStates, [sessionId]: state },
+      };
+    });
   },
 }));

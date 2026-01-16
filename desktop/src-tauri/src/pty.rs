@@ -77,16 +77,33 @@ struct PtySession {
 fn detect_and_emit_thinking(cleaned: &str, session_id: &str, app: &AppHandle) {
     // Simple thinking words from Claude Code v2.1+
     static THINKING_WORDS: &[&str] = &[
-        "Ideating", "Fermenting", "Kneading", "Pollinating", "Fluttering",
-        "Brewing", "Crafting", "Weaving", "Spinning", "Stewing",
-        "Marinating", "Simmering", "Steeping", "Jitterbugging", "Pondering",
-        "Contemplating", "Musing", "Philosophising", "Ruminating",
-        "Deliberating", "Cogitating", "Dilly-dallying", "Levitating",
+        "Ideating",
+        "Fermenting",
+        "Kneading",
+        "Pollinating",
+        "Fluttering",
+        "Brewing",
+        "Crafting",
+        "Weaving",
+        "Spinning",
+        "Stewing",
+        "Marinating",
+        "Simmering",
+        "Steeping",
+        "Jitterbugging",
+        "Pondering",
+        "Contemplating",
+        "Musing",
+        "Philosophising",
+        "Ruminating",
+        "Deliberating",
+        "Cogitating",
+        "Dilly-dallying",
+        "Levitating",
     ];
 
     // Braille spinner characters that Claude uses for animation
     static SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
 
     // Check each line for thinking indicators
     for line in cleaned.lines() {
@@ -126,9 +143,9 @@ fn detect_and_emit_thinking(cleaned: &str, session_id: &str, app: &AppHandle) {
         if !is_thinking && content_to_check.ends_with("...") && content_to_check.len() < 100 {
             // Filter out lines that are actual content (have response markers)
             // Progress messages are typically clean status text
-            let has_special_chars = content_to_check.chars().any(|c| {
-                matches!(c, '●' | '⎿' | '│' | '├' | '└' | '┌' | '┐' | '┘' | '┴' | '┬')
-            });
+            let has_special_chars = content_to_check
+                .chars()
+                .any(|c| matches!(c, '●' | '⎿' | '│' | '├' | '└' | '┌' | '┐' | '┘' | '┴' | '┬'));
 
             if !has_special_chars {
                 is_thinking = true;
@@ -139,7 +156,10 @@ fn detect_and_emit_thinking(cleaned: &str, session_id: &str, app: &AppHandle) {
         // Also check for "thinking", "thought for X" patterns
         if !is_thinking {
             let lower = content_to_check.to_lowercase();
-            if lower.contains("thinking") || lower.contains("thought for") || lower.contains("esc to interrupt") {
+            if lower.contains("thinking")
+                || lower.contains("thought for")
+                || lower.contains("esc to interrupt")
+            {
                 is_thinking = true;
                 thinking_content = content_to_check.to_string();
             }
@@ -210,7 +230,8 @@ impl SessionManager {
         app: AppHandle,
     ) -> Result<(), PtyError> {
         // Default to config settings when not provided
-        self.start_session_with_settings(session_id, project_path, cli_type, db, app, None, None).await
+        self.start_session_with_settings(session_id, project_path, cli_type, db, app, None, None)
+            .await
     }
 
     /// Start a session with optional mobile-provided settings
@@ -243,7 +264,8 @@ impl SessionManager {
         let app_config = config::load_config(&app).unwrap_or_default();
 
         // Use passed settings if provided, otherwise fall back to config
-        let use_skip_permissions = claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
+        let use_skip_permissions =
+            claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
         let use_codex_policy = codex_approval_policy
             .as_deref()
             .and_then(config::CodexApprovalPolicy::from_str)
@@ -313,7 +335,11 @@ impl SessionManager {
 
         // Store conversation ID for all CLI types - Claude uses it for resume, others for tracking
         let _ = db.update_conversation_id(&session_id, &conversation_id);
-        tracing::info!("Set conversation ID for session {}: {}", session_id, conversation_id);
+        tracing::info!(
+            "Set conversation ID for session {}: {}",
+            session_id,
+            conversation_id
+        );
 
         // Spawn the CLI process with retry on failure
         let mut child = {
@@ -346,7 +372,8 @@ impl SessionManager {
 
                         if attempt < max_retries - 1 {
                             // Wait before retrying with exponential backoff
-                            let delay = std::time::Duration::from_millis(100 * (attempt as u64 + 1));
+                            let delay =
+                                std::time::Duration::from_millis(100 * (attempt as u64 + 1));
                             std::thread::sleep(delay);
                         }
                     }
@@ -408,10 +435,7 @@ impl SessionManager {
             fn is_trust_prompt(content: &str) -> bool {
                 let lower = content.to_lowercase();
                 // Trust prompts - auto-accept these
-                let trust_patterns = [
-                    "do you trust the files",
-                    "execution allowed by",
-                ];
+                let trust_patterns = ["do you trust the files", "execution allowed by"];
                 // Tool approval patterns - do NOT auto-accept these
                 let tool_approval_patterns = [
                     "do you want to proceed",
@@ -446,7 +470,10 @@ impl SessionManager {
             loop {
                 // Check for user input signals (non-blocking)
                 while let Ok(()) = user_input_rx.try_recv() {
-                    tracing::debug!("Parser notified of user input for session {}", session_id_clone);
+                    tracing::debug!(
+                        "Parser notified of user input for session {}",
+                        session_id_clone
+                    );
                     parser.user_sent_input();
                 }
 
@@ -460,7 +487,11 @@ impl SessionManager {
                         if !conversation_id_found {
                             if let Some(conv_id) = parser.extract_conversation_id(&output) {
                                 conversation_id_found = true;
-                                tracing::info!("Found conversation ID for session {}: {}", session_id_clone, conv_id);
+                                tracing::info!(
+                                    "Found conversation ID for session {}: {}",
+                                    session_id_clone,
+                                    conv_id
+                                );
 
                                 // Update database with conversation ID
                                 let _ = db.update_conversation_id(&session_id_clone, &conv_id);
@@ -485,9 +516,15 @@ impl SessionManager {
                             tracing::info!("Session {} detected trust prompt in current chunk - auto-accepting immediately", session_id_clone);
                             if let Ok(mut w) = writer_for_reader.lock() {
                                 if let Err(e) = w.write_all(b"\r") {
-                                    tracing::error!("Failed to auto-accept trust prompt (immediate): {}", e);
+                                    tracing::error!(
+                                        "Failed to auto-accept trust prompt (immediate): {}",
+                                        e
+                                    );
                                 } else if let Err(e) = w.flush() {
-                                    tracing::error!("Failed to flush auto-accept (immediate): {}", e);
+                                    tracing::error!(
+                                        "Failed to flush auto-accept (immediate): {}",
+                                        e
+                                    );
                                 } else {
                                     tracing::info!("Successfully auto-accepted trust prompt (immediate) for session {}", session_id_clone);
                                     parser.user_sent_input();
@@ -513,11 +550,17 @@ impl SessionManager {
                             // and auto-accept it by sending Enter key
                             let mut trust_prompt_handled = false;
                             if is_trust_prompt(&prompt_content) {
-                                tracing::info!("Session {} has trust prompt - auto-accepting", session_id_clone);
+                                tracing::info!(
+                                    "Session {} has trust prompt - auto-accepting",
+                                    session_id_clone
+                                );
                                 // Send Enter key to auto-accept
                                 if let Ok(mut w) = writer_for_reader.lock() {
                                     if let Err(e) = w.write_all(b"\r") {
-                                        tracing::error!("Failed to auto-accept trust prompt: {}", e);
+                                        tracing::error!(
+                                            "Failed to auto-accept trust prompt: {}",
+                                            e
+                                        );
                                     } else if let Err(e) = w.flush() {
                                         tracing::error!("Failed to flush auto-accept: {}", e);
                                     } else {
@@ -599,7 +642,11 @@ impl SessionManager {
                         Some(CliWatcher::Claude(watcher))
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to create Claude JSONL watcher for session {}: {}", session_id, e);
+                        tracing::warn!(
+                            "Failed to create Claude JSONL watcher for session {}: {}",
+                            session_id,
+                            e
+                        );
                         None
                     }
                 }
@@ -614,11 +661,18 @@ impl SessionManager {
                     Some(path) => {
                         match CodexWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
-                                tracing::info!("Created Codex JSONL watcher for session {}", session_id);
+                                tracing::info!(
+                                    "Created Codex JSONL watcher for session {}",
+                                    session_id
+                                );
                                 Some(CliWatcher::Codex(watcher))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to create Codex watcher for session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to create Codex watcher for session {}: {}",
+                                    session_id,
+                                    e
+                                );
                                 None
                             }
                         }
@@ -635,14 +689,28 @@ impl SessionManager {
                             .join(today.format("%d").to_string());
 
                         // Create a placeholder path - the watcher will wait for the directory/file
-                        let placeholder_path = date_path.join(format!("rollout-placeholder-{}.jsonl", conversation_id_for_watcher));
-                        match CodexWatcher::new(session_id.clone(), placeholder_path, app_for_watcher) {
+                        let placeholder_path = date_path.join(format!(
+                            "rollout-placeholder-{}.jsonl",
+                            conversation_id_for_watcher
+                        ));
+                        match CodexWatcher::new(
+                            session_id.clone(),
+                            placeholder_path,
+                            app_for_watcher,
+                        ) {
                             Ok(watcher) => {
-                                tracing::info!("Created Codex directory watcher for session {}", session_id);
+                                tracing::info!(
+                                    "Created Codex directory watcher for session {}",
+                                    session_id
+                                );
                                 Some(CliWatcher::Codex(watcher))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to create Codex watcher for session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to create Codex watcher for session {}: {}",
+                                    session_id,
+                                    e
+                                );
                                 None
                             }
                         }
@@ -651,18 +719,28 @@ impl SessionManager {
             }
             CliType::GeminiCli => {
                 // Gemini: JSON at ~/.gemini/tmp/{hash}/chats/session-*.json
-                let gemini_path = gemini::find_session_file(&project_path_for_watcher, &conversation_id_for_watcher)
-                    .or_else(|| gemini::get_latest_session_file(&project_path_for_watcher));
+                let gemini_path = gemini::find_session_file(
+                    &project_path_for_watcher,
+                    &conversation_id_for_watcher,
+                )
+                .or_else(|| gemini::get_latest_session_file(&project_path_for_watcher));
 
                 match gemini_path {
                     Some(path) => {
                         match GeminiWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
-                                tracing::info!("Created Gemini JSON watcher for session {}", session_id);
+                                tracing::info!(
+                                    "Created Gemini JSON watcher for session {}",
+                                    session_id
+                                );
                                 Some(CliWatcher::Gemini(watcher))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to create Gemini watcher for session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to create Gemini watcher for session {}: {}",
+                                    session_id,
+                                    e
+                                );
                                 None
                             }
                         }
@@ -672,14 +750,28 @@ impl SessionManager {
                         tracing::info!("No Gemini session file found yet, will watch for creation");
                         let chats_dir = gemini::get_project_chats_dir(&project_path_for_watcher);
                         // Create placeholder path in the chats directory
-                        let placeholder_path = chats_dir.join(format!("session-placeholder-{}.json", conversation_id_for_watcher));
-                        match GeminiWatcher::new(session_id.clone(), placeholder_path, app_for_watcher) {
+                        let placeholder_path = chats_dir.join(format!(
+                            "session-placeholder-{}.json",
+                            conversation_id_for_watcher
+                        ));
+                        match GeminiWatcher::new(
+                            session_id.clone(),
+                            placeholder_path,
+                            app_for_watcher,
+                        ) {
                             Ok(watcher) => {
-                                tracing::info!("Created Gemini directory watcher for session {}", session_id);
+                                tracing::info!(
+                                    "Created Gemini directory watcher for session {}",
+                                    session_id
+                                );
                                 Some(CliWatcher::Gemini(watcher))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to create Gemini watcher for session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to create Gemini watcher for session {}: {}",
+                                    session_id,
+                                    e
+                                );
                                 None
                             }
                         }
@@ -689,7 +781,10 @@ impl SessionManager {
             CliType::OpenCode => {
                 // OpenCode uses a distributed file system that's more complex to watch
                 // For now, skip OpenCode file watching (would need multiple directory watchers)
-                tracing::info!("OpenCode session {} - file watching not yet implemented", session_id);
+                tracing::info!(
+                    "OpenCode session {} - file watching not yet implemented",
+                    session_id
+                );
                 None
             }
         };
@@ -741,7 +836,10 @@ impl SessionManager {
         let input_bytes: Vec<u8> = input.bytes().collect();
         tracing::info!(
             "PTY send_input START: session={}, input_str={:?}, input_len={}, input_hex={:02x?}",
-            session_id, input, input.len(), input_bytes
+            session_id,
+            input,
+            input.len(),
+            input_bytes
         );
 
         // Signal the parser that user input was sent
@@ -764,6 +862,23 @@ impl SessionManager {
                     return;
                 }
             };
+
+            // CRITICAL FIX: Clear any pending desktop input before sending mobile's message
+            // This prevents input duplication when desktop has typed something but mobile sends first.
+            // Ctrl+U (0x15) is the "kill line" sequence that clears the current line in most terminals.
+            // We send this before the mobile message to ensure only the mobile's text is submitted.
+            if let Err(e) = w.write_all(b"\x15") {
+                tracing::error!("PTY send_input: write Ctrl+U error: {}", e);
+                return;
+            }
+            if let Err(e) = w.flush() {
+                tracing::error!("PTY send_input: flush error after Ctrl+U: {}", e);
+                return;
+            }
+            tracing::info!("PTY send_input: sent Ctrl+U to clear pending input");
+
+            // Small delay to let the terminal process the clear
+            std::thread::sleep(std::time::Duration::from_millis(5));
 
             // Write the entire input string at once
             if let Err(e) = w.write_all(input_owned.as_bytes()) {
@@ -789,7 +904,10 @@ impl SessionManager {
                 tracing::error!("PTY send_input: flush error after CR: {}", e);
                 return;
             }
-            tracing::info!("PTY send_input: wrote CR and flushed for session {}", session_id_owned);
+            tracing::info!(
+                "PTY send_input: wrote CR and flushed for session {}",
+                session_id_owned
+            );
         })
         .await
         .map_err(|e| PtyError::Pty(format!("spawn_blocking failed: {}", e)))?;
@@ -814,7 +932,10 @@ impl SessionManager {
 
         // If input is empty, send Enter key (CR) - used for auto-accept trust prompts
         if input.is_empty() {
-            tracing::info!("Sending Enter key (CR) to session {} for auto-accept", session_id);
+            tracing::info!(
+                "Sending Enter key (CR) to session {} for auto-accept",
+                session_id
+            );
             writer.write_all(b"\r")?;
         } else {
             tracing::debug!("Sending raw input to session {}: {:?}", session_id, input);
@@ -979,10 +1100,7 @@ impl SessionManager {
             fn is_trust_prompt(content: &str) -> bool {
                 let lower = content.to_lowercase();
                 // Trust prompts - auto-accept these
-                let trust_patterns = [
-                    "do you trust the files",
-                    "execution allowed by",
-                ];
+                let trust_patterns = ["do you trust the files", "execution allowed by"];
                 // Tool approval patterns - do NOT auto-accept these
                 let tool_approval_patterns = [
                     "do you want to proceed",
@@ -1017,7 +1135,10 @@ impl SessionManager {
             loop {
                 // Check for user input signals (non-blocking)
                 while let Ok(()) = user_input_rx.try_recv() {
-                    tracing::debug!("Parser notified of user input for resumed session {}", session_id_clone);
+                    tracing::debug!(
+                        "Parser notified of user input for resumed session {}",
+                        session_id_clone
+                    );
                     parser.user_sent_input();
                 }
 
@@ -1036,9 +1157,15 @@ impl SessionManager {
                             tracing::info!("Resumed session {} detected trust prompt in current chunk - auto-accepting immediately", session_id_clone);
                             if let Ok(mut w) = writer_for_reader.lock() {
                                 if let Err(e) = w.write_all(b"\r") {
-                                    tracing::error!("Failed to auto-accept trust prompt (immediate): {}", e);
+                                    tracing::error!(
+                                        "Failed to auto-accept trust prompt (immediate): {}",
+                                        e
+                                    );
                                 } else if let Err(e) = w.flush() {
-                                    tracing::error!("Failed to flush auto-accept (immediate): {}", e);
+                                    tracing::error!(
+                                        "Failed to flush auto-accept (immediate): {}",
+                                        e
+                                    );
                                 } else {
                                     tracing::info!("Successfully auto-accepted trust prompt (immediate) for resumed session {}", session_id_clone);
                                     parser.user_sent_input();
@@ -1049,7 +1176,10 @@ impl SessionManager {
 
                         // Check if Claude is waiting for input (use cleaned output for better pattern matching)
                         if parser.check_waiting_for_input(&cleaned) {
-                            tracing::debug!("Resumed session {} is waiting for input", session_id_clone);
+                            tracing::debug!(
+                                "Resumed session {} is waiting for input",
+                                session_id_clone
+                            );
                             // Include the recent accumulated output as prompt content so mobile can detect
                             // whether this is a tool approval prompt or general waiting
                             // Use the context captured before the check (buffer may be cleared during check)
@@ -1063,11 +1193,17 @@ impl SessionManager {
                             // AUTO-ACCEPT TRUST PROMPTS: Check if this is a trust prompt
                             // and auto-accept it by sending Enter key
                             if is_trust_prompt(&prompt_content) {
-                                tracing::info!("Resumed session {} has trust prompt - auto-accepting", session_id_clone);
+                                tracing::info!(
+                                    "Resumed session {} has trust prompt - auto-accepting",
+                                    session_id_clone
+                                );
                                 // Send Enter key to auto-accept
                                 if let Ok(mut w) = writer_for_reader.lock() {
                                     if let Err(e) = w.write_all(b"\r") {
-                                        tracing::error!("Failed to auto-accept trust prompt: {}", e);
+                                        tracing::error!(
+                                            "Failed to auto-accept trust prompt: {}",
+                                            e
+                                        );
                                     } else if let Err(e) = w.flush() {
                                         tracing::error!("Failed to flush auto-accept: {}", e);
                                     } else {
@@ -1135,11 +1271,18 @@ impl SessionManager {
                     app_for_watcher,
                 ) {
                     Ok(watcher) => {
-                        tracing::info!("Created Claude JSONL watcher for resumed session {}", session_id);
+                        tracing::info!(
+                            "Created Claude JSONL watcher for resumed session {}",
+                            session_id
+                        );
                         Some(CliWatcher::Claude(watcher))
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to create Claude JSONL watcher for resumed session {}: {}", session_id, e);
+                        tracing::warn!(
+                            "Failed to create Claude JSONL watcher for resumed session {}: {}",
+                            session_id,
+                            e
+                        );
                         None
                     }
                 }
@@ -1152,11 +1295,18 @@ impl SessionManager {
                     Some(path) => {
                         match CodexWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
-                                tracing::info!("Created Codex JSONL watcher for resumed session {}", session_id);
+                                tracing::info!(
+                                    "Created Codex JSONL watcher for resumed session {}",
+                                    session_id
+                                );
                                 Some(CliWatcher::Codex(watcher))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to create Codex watcher for resumed session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to create Codex watcher for resumed session {}: {}",
+                                    session_id,
+                                    e
+                                );
                                 None
                             }
                         }
@@ -1168,18 +1318,28 @@ impl SessionManager {
                 }
             }
             CliType::GeminiCli => {
-                let gemini_path = gemini::find_session_file(&project_path_for_watcher, &conversation_id_for_watcher)
-                    .or_else(|| gemini::get_latest_session_file(&project_path_for_watcher));
+                let gemini_path = gemini::find_session_file(
+                    &project_path_for_watcher,
+                    &conversation_id_for_watcher,
+                )
+                .or_else(|| gemini::get_latest_session_file(&project_path_for_watcher));
 
                 match gemini_path {
                     Some(path) => {
                         match GeminiWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
-                                tracing::info!("Created Gemini JSON watcher for resumed session {}", session_id);
+                                tracing::info!(
+                                    "Created Gemini JSON watcher for resumed session {}",
+                                    session_id
+                                );
                                 Some(CliWatcher::Gemini(watcher))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to create Gemini watcher for resumed session {}: {}", session_id, e);
+                                tracing::warn!(
+                                    "Failed to create Gemini watcher for resumed session {}: {}",
+                                    session_id,
+                                    e
+                                );
                                 None
                             }
                         }
@@ -1191,7 +1351,10 @@ impl SessionManager {
                 }
             }
             CliType::OpenCode => {
-                tracing::info!("OpenCode resumed session {} - file watching not yet implemented", session_id);
+                tracing::info!(
+                    "OpenCode resumed session {} - file watching not yet implemented",
+                    session_id
+                );
                 None
             }
         };

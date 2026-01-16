@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { clsx } from 'clsx';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Session, useSessionStore } from '../hooks/useSession';
+import { Session, WaitingState, useSessionStore } from '../hooks/useSession';
 
 // CLI icons/badges
 const CLI_BADGES: Record<string, { label: string; color: string }> = {
@@ -26,7 +26,7 @@ export default function Sidebar({
   onOpenAbout,
   onOpenHelp,
 }: SidebarProps) {
-  const { createSession, resumeSession, fetchAvailableClis, availableClis } = useSessionStore();
+  const { createSession, resumeSession, fetchAvailableClis, availableClis, waitingStates } = useSessionStore();
   const [isCreating, setIsCreating] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showCliPicker, setShowCliPicker] = useState(false);
@@ -199,6 +199,8 @@ export default function Sidebar({
                 isActive={session.id === activeSessionId}
                 onClick={() => onSelectSession(session.id)}
                 isCollapsed={isCollapsed}
+                waitingState={waitingStates[session.id]}
+                isHistory={false}
               />
             ))}
           </div>
@@ -220,6 +222,7 @@ export default function Sidebar({
                 onClick={() => onSelectSession(session.id)}
                 onResume={session.conversationId ? () => resumeSession(session.id) : undefined}
                 isCollapsed={isCollapsed}
+                isHistory={true}
               />
             ))}
           </div>
@@ -283,16 +286,41 @@ interface SessionItemProps {
   onClick: () => void;
   onResume?: () => void;
   isCollapsed?: boolean;
+  waitingState?: WaitingState;
+  isHistory?: boolean;
 }
 
-function SessionItem({ session, isActive, onClick, onResume, isCollapsed }: SessionItemProps) {
+function SessionItem({ session, isActive, onClick, onResume, isCollapsed, waitingState, isHistory }: SessionItemProps) {
   const [isResuming, setIsResuming] = useState(false);
 
-  const statusColor = {
-    active: 'bg-[#9ece6a]',
-    idle: 'bg-[#e0af68]',
-    closed: 'bg-[#565f89]',
-  }[session.status];
+  // Determine display state based on waiting state and session status
+  // Priority: tool_approval > awaiting_response > working > completed
+  let displayState: 'working' | 'awaiting_approval' | 'awaiting_response' | 'completed' | 'history' = 'completed';
+
+  if (isHistory || session.status === 'closed') {
+    displayState = 'history';
+  } else if (waitingState?.waitType === 'tool_approval') {
+    displayState = 'awaiting_approval';
+  } else if (waitingState?.waitType === 'awaiting_response') {
+    displayState = 'awaiting_response';
+  } else if (session.status === 'active') {
+    // Active with no waiting state = Claude is working
+    displayState = 'working';
+  } else {
+    // idle status = completed/paused
+    displayState = 'completed';
+  }
+
+  // Status colors and text
+  const statusConfig = {
+    working: { color: 'bg-[#9ece6a]', text: 'Claude working...' },
+    awaiting_approval: { color: 'bg-[#e0af68]', text: 'Awaiting approval' },
+    awaiting_response: { color: 'bg-[#e0af68]', text: 'Awaiting response' },
+    completed: { color: 'bg-[#565f89]', text: 'Completed' },
+    history: { color: '', text: '' }, // No dot for history
+  };
+
+  const config = statusConfig[displayState];
 
   // Extract project name from path
   const projectName = session.projectPath.split('/').pop() || session.projectPath;
@@ -320,14 +348,17 @@ function SessionItem({ session, isActive, onClick, onResume, isCollapsed }: Sess
         className={clsx(
           'w-8 h-8 mx-auto mb-1 rounded-lg flex items-center justify-center cursor-pointer relative',
           'hover:bg-[#24283b] transition-colors duration-150',
-          isActive && 'bg-[#24283b]'
+          isActive && 'bg-[#24283b]',
+          isHistory && 'opacity-60'
         )}
-        title={`${session.name} - ${projectName} (${session.cliType})`}
+        title={`${session.name} - ${projectName} (${session.cliType})${config.text ? ` - ${config.text}` : ''}`}
       >
         <span className={clsx('w-5 h-5 rounded text-white text-xs font-bold flex items-center justify-center', cliBadge.color)}>
           {cliBadge.label}
         </span>
-        <span className={clsx('absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full', statusColor)} />
+        {config.color && (
+          <span className={clsx('absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full', config.color)} />
+        )}
       </div>
     );
   }
@@ -338,21 +369,38 @@ function SessionItem({ session, isActive, onClick, onResume, isCollapsed }: Sess
       className={clsx(
         'w-full text-left px-3 py-2 rounded-lg transition-colors duration-150 cursor-pointer',
         'hover:bg-[#24283b]',
-        isActive && 'bg-[#24283b]'
+        isActive && 'bg-[#24283b]',
+        isHistory && 'opacity-60'
       )}
     >
       <div className="flex items-center gap-2">
         <span className={clsx('w-4 h-4 rounded text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0', cliBadge.color)}>
           {cliBadge.label}
         </span>
-        <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', statusColor)} />
+        {/* Only show status dot for active sessions, not history */}
+        {config.color ? (
+          <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', config.color)} />
+        ) : (
+          <span className="w-2 flex-shrink-0" /> // Placeholder for alignment
+        )}
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-[#c0caf5] truncate">
             {session.name}
           </div>
-          <div className="text-xs text-[#565f89] truncate">
-            {projectName}
-          </div>
+          {/* Show status text for active sessions, project name for history */}
+          {config.text ? (
+            <div className={clsx('text-xs truncate', {
+              'text-[#9ece6a]': displayState === 'working',
+              'text-[#e0af68]': displayState === 'awaiting_approval' || displayState === 'awaiting_response',
+              'text-[#565f89]': displayState === 'completed',
+            })}>
+              {config.text}
+            </div>
+          ) : (
+            <div className="text-xs text-[#565f89] truncate">
+              {projectName}
+            </div>
+          )}
         </div>
         {onResume && session.status === 'closed' && (
           <button

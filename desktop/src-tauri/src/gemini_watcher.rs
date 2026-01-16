@@ -28,11 +28,7 @@ impl GeminiWatcher {
     ///
     /// Watches the JSON file at `~/.gemini/tmp/<hash>/chats/session-*.json`
     /// and emits activities via Tauri events when the file changes.
-    pub fn new(
-        session_id: String,
-        json_path: PathBuf,
-        app: AppHandle,
-    ) -> Result<Self, String> {
+    pub fn new(session_id: String, json_path: PathBuf, app: AppHandle) -> Result<Self, String> {
         tracing::info!(
             "Creating Gemini watcher for session {}: {:?}",
             session_id,
@@ -195,7 +191,10 @@ impl GeminiWatcher {
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    tracing::warn!("Gemini watcher channel disconnected for session {}", session_id);
+                    tracing::warn!(
+                        "Gemini watcher channel disconnected for session {}",
+                        session_id
+                    );
                     break;
                 }
             }

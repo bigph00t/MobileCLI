@@ -21,7 +21,9 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use crate::config;
 use crate::db::Database;
 use crate::parser::ActivityType;
-use crate::ws::{ActivityInfo, ClientMessage, DirectoryEntry, MessageInfo, ServerMessage, SessionInfo};
+use crate::ws::{
+    ActivityInfo, ClientMessage, DirectoryEntry, MessageInfo, ServerMessage, SessionInfo,
+};
 
 // Default relay server URL (via Caddy reverse proxy with TLS)
 const DEFAULT_RELAY_URL: &str = "wss://relay.mobilecli.app";
@@ -48,7 +50,10 @@ fn get_relay_urls(app: Option<&AppHandle>) -> Vec<String> {
 
 /// Get the primary relay URL for display purposes
 fn get_relay_url(app: Option<&AppHandle>) -> String {
-    get_relay_urls(app).first().cloned().unwrap_or_else(|| DEFAULT_RELAY_URL.to_string())
+    get_relay_urls(app)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_RELAY_URL.to_string())
 }
 
 /// Reconnection strategy with exponential backoff
@@ -68,8 +73,8 @@ impl Default for ReconnectStrategy {
 impl ReconnectStrategy {
     pub fn new() -> Self {
         Self {
-            base_delay_ms: 1000,   // Start at 1 second
-            max_delay_ms: 30000,  // Max 30 seconds
+            base_delay_ms: 1000, // Start at 1 second
+            max_delay_ms: 30000, // Max 30 seconds
             attempt: 0,
         }
     }
@@ -301,7 +306,9 @@ async fn try_connect_to_relay(
 }
 
 /// Connect to relay with failover - tries each URL in sequence
-async fn connect_with_failover(app: Option<&AppHandle>) -> Result<
+async fn connect_with_failover(
+    app: Option<&AppHandle>,
+) -> Result<
     (
         futures_util::stream::SplitSink<
             tokio_tungstenite::WebSocketStream<
@@ -351,17 +358,18 @@ pub async fn start_relay(
     let key_base64 = BASE64.encode(connection.key);
 
     // Try to connect with failover to backup relays
-    let (mut ws_sender, mut ws_receiver, room_code, connected_url) = match connect_with_failover(Some(&app)).await {
-        Ok(result) => {
-            // Reset backoff on successful connection
-            state.reconnect_strategy.write().await.reset();
-            result
-        }
-        Err(e) => {
-            state.set_status(&app, RelayStatus::Disconnected).await;
-            return Err(e);
-        }
-    };
+    let (mut ws_sender, mut ws_receiver, room_code, connected_url) =
+        match connect_with_failover(Some(&app)).await {
+            Ok(result) => {
+                // Reset backoff on successful connection
+                state.reconnect_strategy.write().await.reset();
+                result
+            }
+            Err(e) => {
+                state.set_status(&app, RelayStatus::Disconnected).await;
+                return Err(e);
+            }
+        };
 
     // Channel for sending messages to relay
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -370,7 +378,11 @@ pub async fn start_relay(
 
     // Mark as connected
     state.set_status(&app, RelayStatus::Connected).await;
-    tracing::info!("Relay connected to {} with room {}", connected_url, room_code);
+    tracing::info!(
+        "Relay connected to {} with room {}",
+        connected_url,
+        room_code
+    );
 
     // Store connection state
     {
@@ -555,7 +567,10 @@ pub async fn start_relay(
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             let msg = ServerMessage::Error {
                 code: "input_failed".to_string(),
-                message: payload["error"].as_str().unwrap_or("Unknown error").to_string(),
+                message: payload["error"]
+                    .as_str()
+                    .unwrap_or("Unknown error")
+                    .to_string(),
             };
             if let Ok(json) = serde_json::to_string(&msg) {
                 if let Ok(encrypted) = encrypt_message(&key_input_err, &json) {
@@ -1006,6 +1021,15 @@ pub async fn start_relay(
                                                         }
                                                     }
                                                 }
+                                                ClientMessage::Ping => {
+                                                    // Respond to heartbeat ping from mobile
+                                                    let msg = ServerMessage::Pong;
+                                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                                        if let Ok(encrypted) = encrypt_message(&key_response, &json) {
+                                                            let _ = tx_response.send(encrypted);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         } else {
                                             tracing::warn!("Failed to parse relay message as ClientMessage");
@@ -1117,10 +1141,7 @@ fn encrypt_message(key: &EncryptionKey, plaintext: &str) -> Result<String, Strin
 
 /// Send a message through the relay (encrypted)
 #[allow(dead_code)]
-pub async fn send_relay_message(
-    state: Arc<RelayState>,
-    message: &str,
-) -> Result<(), String> {
+pub async fn send_relay_message(state: Arc<RelayState>, message: &str) -> Result<(), String> {
     let conn = state.connection.read().await;
 
     if let Some(connection) = conn.as_ref() {

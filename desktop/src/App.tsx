@@ -129,6 +129,52 @@ function App() {
       }));
     });
 
+    // Listen for waiting-for-input events (tool approval, awaiting response)
+    const unlistenWaitingForInput = listen<{
+      sessionId: string;
+      timestamp: string;
+      promptContent?: string;
+    }>('waiting-for-input', (event) => {
+      const { sessionId, timestamp, promptContent } = event.payload;
+      // Detect if this is a tool approval based on prompt content
+      const isToolApproval = promptContent?.includes('Do you want to') ||
+        promptContent?.includes('Allow') ||
+        promptContent?.includes('approve') ||
+        promptContent?.includes('[Y/n]') ||
+        promptContent?.includes('(y/n)');
+
+      useSessionStore.getState().setWaitingState(sessionId, {
+        sessionId,
+        waitType: isToolApproval ? 'tool_approval' : 'awaiting_response',
+        promptContent,
+        timestamp,
+      });
+    });
+
+    // Listen for waiting-cleared events (tool approval resolved)
+    const unlistenWaitingCleared = listen<{
+      sessionId: string;
+    }>('waiting-cleared', (event) => {
+      const { sessionId } = event.payload;
+      useSessionStore.getState().setWaitingState(sessionId, null);
+    });
+
+    // Listen for assistant messages (clears working state)
+    const unlistenMessage = listen<{
+      sessionId: string;
+      role: string;
+    }>('message', (event) => {
+      const { sessionId, role } = event.payload;
+      // When assistant sends a message, clear waiting state (they're done)
+      if (role === 'assistant') {
+        const currentState = useSessionStore.getState().waitingStates[sessionId];
+        // Only clear if not in tool_approval state (that should stay until user responds)
+        if (currentState?.waitType !== 'tool_approval') {
+          useSessionStore.getState().setWaitingState(sessionId, null);
+        }
+      }
+    });
+
     return () => {
       unlistenPty.then((fn) => fn());
       unlistenSessionCreated.then((fn) => fn());
@@ -136,6 +182,9 @@ function App() {
       unlistenSessionClosed.then((fn) => fn());
       unlistenSessionRenamed.then((fn) => fn());
       unlistenSessionDeleted.then((fn) => fn());
+      unlistenWaitingForInput.then((fn) => fn());
+      unlistenWaitingCleared.then((fn) => fn());
+      unlistenMessage.then((fn) => fn());
     };
   }, []);
 

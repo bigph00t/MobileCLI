@@ -37,8 +37,7 @@ pub enum CodexError {
 /// Get the Codex sessions directory
 pub fn get_codex_sessions_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
-    let codex_home = std::env::var("CODEX_HOME")
-        .unwrap_or_else(|_| format!("{}/.codex", home));
+    let codex_home = std::env::var("CODEX_HOME").unwrap_or_else(|_| format!("{}/.codex", home));
     PathBuf::from(format!("{}/sessions", codex_home))
 }
 
@@ -264,7 +263,9 @@ pub fn record_to_activities(record: &CodexRecord) -> Vec<Activity> {
     match record.record_type {
         CodexRecordType::ResponseItem => {
             // Try to parse as ResponseItemPayload
-            if let Ok(payload) = serde_json::from_value::<ResponseItemPayload>(record.payload.clone()) {
+            if let Ok(payload) =
+                serde_json::from_value::<ResponseItemPayload>(record.payload.clone())
+            {
                 let role = payload.role.as_deref().unwrap_or("");
 
                 if let Some(content) = payload.content {
@@ -272,35 +273,51 @@ pub fn record_to_activities(record: &CodexRecord) -> Vec<Activity> {
                         match item {
                             ContentItem::InputText { text } => {
                                 // User input
-                                if !text.trim().is_empty() && (role == "user" || role == "developer") {
-                                    activities.push(
-                                        Activity::new(ActivityType::UserPrompt, text, timestamp.clone())
-                                    );
+                                if !text.trim().is_empty()
+                                    && (role == "user" || role == "developer")
+                                {
+                                    activities.push(Activity::new(
+                                        ActivityType::UserPrompt,
+                                        text,
+                                        timestamp.clone(),
+                                    ));
                                 }
                             }
                             ContentItem::OutputText { text } => {
                                 // Assistant response
                                 if !text.trim().is_empty() {
-                                    activities.push(
-                                        Activity::new(ActivityType::Text, text, timestamp.clone())
-                                    );
+                                    activities.push(Activity::new(
+                                        ActivityType::Text,
+                                        text,
+                                        timestamp.clone(),
+                                    ));
                                 }
                             }
-                            ContentItem::FunctionCall { id, name, arguments } => {
+                            ContentItem::FunctionCall {
+                                id,
+                                name,
+                                arguments,
+                            } => {
                                 // Tool call
                                 let content = format_tool_call(&name, &arguments);
                                 activities.push(
-                                    Activity::new(ActivityType::ToolStart, content, timestamp.clone())
-                                        .with_uuid(id)
-                                        .with_tool(name, Some(arguments))
+                                    Activity::new(
+                                        ActivityType::ToolStart,
+                                        content,
+                                        timestamp.clone(),
+                                    )
+                                    .with_uuid(id)
+                                    .with_tool(name, Some(arguments)),
                                 );
                             }
                             ContentItem::FunctionCallOutput { output, .. } => {
                                 // Tool result
                                 if !output.trim().is_empty() {
-                                    activities.push(
-                                        Activity::new(ActivityType::ToolResult, output, timestamp.clone())
-                                    );
+                                    activities.push(Activity::new(
+                                        ActivityType::ToolResult,
+                                        output,
+                                        timestamp.clone(),
+                                    ));
                                 }
                             }
                             ContentItem::Other => {}
@@ -318,9 +335,11 @@ pub fn record_to_activities(record: &CodexRecord) -> Vec<Activity> {
                 if msg_type == "UserMessage" {
                     if let Some(text) = record.payload.get("text").and_then(|v| v.as_str()) {
                         if !text.trim().is_empty() {
-                            activities.push(
-                                Activity::new(ActivityType::UserPrompt, text.to_string(), timestamp)
-                            );
+                            activities.push(Activity::new(
+                                ActivityType::UserPrompt,
+                                text.to_string(),
+                                timestamp,
+                            ));
                         }
                     }
                 }
@@ -342,17 +361,29 @@ fn format_tool_call(name: &str, arguments: &str) -> String {
                 }
             }
             "read_file" | "read" => {
-                if let Some(path) = args.get("path").or_else(|| args.get("file_path")).and_then(|v| v.as_str()) {
+                if let Some(path) = args
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
                     return format!("Read({})", path);
                 }
             }
             "write_file" | "write" => {
-                if let Some(path) = args.get("path").or_else(|| args.get("file_path")).and_then(|v| v.as_str()) {
+                if let Some(path) = args
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
                     return format!("Write({})", path);
                 }
             }
             "edit_file" | "apply_diff" => {
-                if let Some(path) = args.get("path").or_else(|| args.get("file_path")).and_then(|v| v.as_str()) {
+                if let Some(path) = args
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
                     return format!("Edit({})", path);
                 }
             }
@@ -423,10 +454,7 @@ pub fn read_activities(session_id: &str) -> Result<Vec<Activity>, CodexError> {
 
     let records = read_codex_file(&path)?;
 
-    let activities: Vec<Activity> = records
-        .iter()
-        .flat_map(record_to_activities)
-        .collect();
+    let activities: Vec<Activity> = records.iter().flat_map(record_to_activities).collect();
 
     tracing::info!(
         "Converted {} Codex records to {} activities",

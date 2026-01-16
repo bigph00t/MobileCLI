@@ -31,9 +31,15 @@ struct MessageContent {
 #[serde(untagged)]
 #[allow(dead_code)]
 enum ContentBlock {
-    Text { text: String },
-    ToolUse { name: String },
-    ToolResult { content: Option<String> },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        name: String,
+    },
+    ToolResult {
+        content: Option<String>,
+    },
     /// Catch-all for unknown content block types
     Other(serde_json::Value),
 }
@@ -72,8 +78,8 @@ pub fn read_conversation_history(
     let file_path = get_conversation_file_path(project_path, conversation_id)
         .ok_or_else(|| "Conversation file not found".to_string())?;
 
-    let file = File::open(&file_path)
-        .map_err(|e| format!("Failed to open conversation file: {}", e))?;
+    let file =
+        File::open(&file_path).map_err(|e| format!("Failed to open conversation file: {}", e))?;
 
     let reader = BufReader::new(file);
     let mut messages = Vec::new();

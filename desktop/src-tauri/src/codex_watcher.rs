@@ -27,11 +27,7 @@ impl CodexWatcher {
     ///
     /// Watches the JSONL file at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
     /// and emits activities via Tauri events when new entries are added.
-    pub fn new(
-        session_id: String,
-        jsonl_path: PathBuf,
-        app: AppHandle,
-    ) -> Result<Self, String> {
+    pub fn new(session_id: String, jsonl_path: PathBuf, app: AppHandle) -> Result<Self, String> {
         tracing::info!(
             "Creating Codex watcher for session {}: {:?}",
             session_id,
@@ -182,7 +178,10 @@ impl CodexWatcher {
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    tracing::warn!("Codex watcher channel disconnected for session {}", session_id);
+                    tracing::warn!(
+                        "Codex watcher channel disconnected for session {}",
+                        session_id
+                    );
                     break;
                 }
             }

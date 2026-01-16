@@ -111,8 +111,8 @@ impl CliType {
         match self {
             CliType::ClaudeCode => true,
             CliType::GeminiCli => true,
-            CliType::OpenCode => true,  // via -c flag
-            CliType::Codex => true,     // via resume command
+            CliType::OpenCode => true, // via -c flag
+            CliType::Codex => true,    // via resume command
         }
     }
 
@@ -139,7 +139,7 @@ pub struct SessionRecord {
     pub last_active_at: String,
     pub status: String,
     pub conversation_id: Option<String>, // CLI-specific session ID for resume
-    pub cli_type: String,                 // "claude" or "gemini"
+    pub cli_type: String,                // "claude" or "gemini"
 }
 
 /// DEPRECATED: JSONL is now the primary source for messages.
@@ -191,10 +191,7 @@ impl Database {
         )?;
 
         // Migration: Add conversation_id column if it doesn't exist
-        let _ = conn.execute(
-            "ALTER TABLE sessions ADD COLUMN conversation_id TEXT",
-            [],
-        );
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN conversation_id TEXT", []);
 
         // Migration: Add cli_type column if it doesn't exist (default to 'claude' for existing sessions)
         let _ = conn.execute(
@@ -207,7 +204,12 @@ impl Database {
         })
     }
 
-    pub fn create_session(&self, name: &str, project_path: &str, cli_type: CliType) -> SqliteResult<SessionRecord> {
+    pub fn create_session(
+        &self,
+        name: &str,
+        project_path: &str,
+        cli_type: CliType,
+    ) -> SqliteResult<SessionRecord> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -248,7 +250,9 @@ impl Database {
                 last_active_at: row.get(4)?,
                 status: row.get(5)?,
                 conversation_id: row.get(6)?,
-                cli_type: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "claude".to_string()),
+                cli_type: row
+                    .get::<_, Option<String>>(7)?
+                    .unwrap_or_else(|| "claude".to_string()),
             }))
         } else {
             Ok(None)
@@ -271,14 +275,20 @@ impl Database {
                 last_active_at: row.get(4)?,
                 status: row.get(5)?,
                 conversation_id: row.get(6)?,
-                cli_type: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "claude".to_string()),
+                cli_type: row
+                    .get::<_, Option<String>>(7)?
+                    .unwrap_or_else(|| "claude".to_string()),
             })
         })?;
 
         rows.collect()
     }
 
-    pub fn update_conversation_id(&self, session_id: &str, conversation_id: &str) -> SqliteResult<()> {
+    pub fn update_conversation_id(
+        &self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE sessions SET conversation_id = ?1 WHERE id = ?2",
@@ -428,10 +438,22 @@ mod tests {
 
     #[test]
     fn test_cli_type_roundtrip() {
-        assert_eq!(CliType::from_str(CliType::ClaudeCode.as_str()), Some(CliType::ClaudeCode));
-        assert_eq!(CliType::from_str(CliType::GeminiCli.as_str()), Some(CliType::GeminiCli));
-        assert_eq!(CliType::from_str(CliType::OpenCode.as_str()), Some(CliType::OpenCode));
-        assert_eq!(CliType::from_str(CliType::Codex.as_str()), Some(CliType::Codex));
+        assert_eq!(
+            CliType::from_str(CliType::ClaudeCode.as_str()),
+            Some(CliType::ClaudeCode)
+        );
+        assert_eq!(
+            CliType::from_str(CliType::GeminiCli.as_str()),
+            Some(CliType::GeminiCli)
+        );
+        assert_eq!(
+            CliType::from_str(CliType::OpenCode.as_str()),
+            Some(CliType::OpenCode)
+        );
+        assert_eq!(
+            CliType::from_str(CliType::Codex.as_str()),
+            Some(CliType::Codex)
+        );
         assert_eq!(CliType::from_str("invalid"), None);
     }
 
@@ -454,18 +476,32 @@ mod tests {
     #[test]
     fn test_cli_type_approval_model() {
         // Claude, Gemini, and Codex all use numbered options (1, 2, 3)
-        assert_eq!(CliType::ClaudeCode.approval_model(), ApprovalModel::NumberedOptions);
-        assert_eq!(CliType::GeminiCli.approval_model(), ApprovalModel::NumberedOptions);
-        assert_eq!(CliType::Codex.approval_model(), ApprovalModel::NumberedOptions);
+        assert_eq!(
+            CliType::ClaudeCode.approval_model(),
+            ApprovalModel::NumberedOptions
+        );
+        assert_eq!(
+            CliType::GeminiCli.approval_model(),
+            ApprovalModel::NumberedOptions
+        );
+        assert_eq!(
+            CliType::Codex.approval_model(),
+            ApprovalModel::NumberedOptions
+        );
         // OpenCode uses arrow navigation
-        assert_eq!(CliType::OpenCode.approval_model(), ApprovalModel::ArrowNavigation);
+        assert_eq!(
+            CliType::OpenCode.approval_model(),
+            ApprovalModel::ArrowNavigation
+        );
     }
 
     #[test]
     fn test_create_session() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("Test Session", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("Test Session", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
 
         assert_eq!(session.name, "Test Session");
         assert_eq!(session.project_path, "/tmp/test");
@@ -477,7 +513,9 @@ mod tests {
     fn test_get_session() {
         let (db, _dir) = setup_test_db();
 
-        let created = db.create_session("Test", "/tmp/test", CliType::GeminiCli).unwrap();
+        let created = db
+            .create_session("Test", "/tmp/test", CliType::GeminiCli)
+            .unwrap();
         let loaded = db.get_session(&created.id).unwrap().unwrap();
 
         assert_eq!(loaded.id, created.id);
@@ -496,8 +534,10 @@ mod tests {
     fn test_get_all_sessions() {
         let (db, _dir) = setup_test_db();
 
-        db.create_session("Session 1", "/tmp/1", CliType::ClaudeCode).unwrap();
-        db.create_session("Session 2", "/tmp/2", CliType::GeminiCli).unwrap();
+        db.create_session("Session 1", "/tmp/1", CliType::ClaudeCode)
+            .unwrap();
+        db.create_session("Session 2", "/tmp/2", CliType::GeminiCli)
+            .unwrap();
 
         let sessions = db.get_all_sessions().unwrap();
         assert_eq!(sessions.len(), 2);
@@ -507,7 +547,9 @@ mod tests {
     fn test_update_session_status() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("Test", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("Test", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
         db.update_session_status(&session.id, "closed").unwrap();
 
         let loaded = db.get_session(&session.id).unwrap().unwrap();
@@ -518,7 +560,9 @@ mod tests {
     fn test_update_conversation_id() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("Test", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("Test", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
         db.update_conversation_id(&session.id, "conv-123").unwrap();
 
         let loaded = db.get_session(&session.id).unwrap().unwrap();
@@ -529,7 +573,9 @@ mod tests {
     fn test_rename_session() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("Old Name", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("Old Name", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
         db.rename_session(&session.id, "New Name").unwrap();
 
         let loaded = db.get_session(&session.id).unwrap().unwrap();
@@ -540,7 +586,9 @@ mod tests {
     fn test_delete_session() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("To Delete", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("To Delete", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
         db.delete_session(&session.id).unwrap();
 
         let loaded = db.get_session(&session.id).unwrap();
@@ -551,10 +599,14 @@ mod tests {
     fn test_add_and_get_messages() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("Test", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("Test", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
 
-        db.add_message(&session.id, "user", "Hello!", None, None).unwrap();
-        db.add_message(&session.id, "assistant", "Hi there!", None, None).unwrap();
+        db.add_message(&session.id, "user", "Hello!", None, None)
+            .unwrap();
+        db.add_message(&session.id, "assistant", "Hi there!", None, None)
+            .unwrap();
 
         let messages = db.get_messages(&session.id, 10).unwrap();
         assert_eq!(messages.len(), 2);
@@ -574,8 +626,10 @@ mod tests {
     fn test_close_all_active_sessions() {
         let (db, _dir) = setup_test_db();
 
-        db.create_session("Active 1", "/tmp/1", CliType::ClaudeCode).unwrap();
-        db.create_session("Active 2", "/tmp/2", CliType::GeminiCli).unwrap();
+        db.create_session("Active 1", "/tmp/1", CliType::ClaudeCode)
+            .unwrap();
+        db.create_session("Active 2", "/tmp/2", CliType::GeminiCli)
+            .unwrap();
 
         let closed_count = db.close_all_active_sessions().unwrap();
         assert_eq!(closed_count, 2);
@@ -606,7 +660,9 @@ mod tests {
     fn test_session_activity_update() {
         let (db, _dir) = setup_test_db();
 
-        let session = db.create_session("Test", "/tmp/test", CliType::ClaudeCode).unwrap();
+        let session = db
+            .create_session("Test", "/tmp/test", CliType::ClaudeCode)
+            .unwrap();
         let original_activity = session.last_active_at.clone();
 
         std::thread::sleep(std::time::Duration::from_millis(10));

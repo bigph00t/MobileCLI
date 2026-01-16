@@ -13,11 +13,18 @@ pub enum ClientMessage {
     // Request session list from host
     GetSessions,
     // Subscribe to a session's updates
-    Subscribe { session_id: String },
+    Subscribe {
+        session_id: String,
+    },
     // Unsubscribe from a session
-    Unsubscribe { session_id: String },
+    Unsubscribe {
+        session_id: String,
+    },
     // Send input to a session
-    SendInput { session_id: String, text: String },
+    SendInput {
+        session_id: String,
+        text: String,
+    },
     // Tool approval response
     ToolApproval {
         session_id: String,
@@ -33,7 +40,9 @@ pub enum ClientMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     // List of sessions from host
-    SessionsList { sessions: Vec<SessionInfo> },
+    SessionsList {
+        sessions: Vec<SessionInfo>,
+    },
     // Activity update for a session
     ActivityUpdate {
         session_id: String,
@@ -52,7 +61,9 @@ pub enum ServerMessage {
         params: serde_json::Value,
     },
     // Error from host
-    Error { message: String },
+    Error {
+        message: String,
+    },
     // Pong response
     Pong,
 }
@@ -107,7 +118,12 @@ impl ClientConnection {
         let connected = self.connected.clone();
         let app_clone = app.clone();
 
-        tokio::spawn(Self::handle_incoming(app_clone, read, key, connected.clone()));
+        tokio::spawn(Self::handle_incoming(
+            app_clone,
+            read,
+            key,
+            connected.clone(),
+        ));
         tokio::spawn(Self::handle_outgoing(write, rx, connected));
 
         Ok(())
@@ -203,11 +219,9 @@ impl ClientConnection {
     }
 
     pub fn decrypt(ciphertext_b64: &str, key: &[u8; 32]) -> Result<String, String> {
-        let combined = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            ciphertext_b64,
-        )
-        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+        let combined =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, ciphertext_b64)
+                .map_err(|e| format!("Base64 decode failed: {}", e))?;
 
         if combined.len() < 24 {
             return Err("Ciphertext too short".to_string());

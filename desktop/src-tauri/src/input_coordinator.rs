@@ -106,15 +106,19 @@ impl InputCoordinator {
         match *last {
             None => true,
             Some((ref last_sender, last_time)) => {
-                last_sender == sender_id ||
-                last_time.elapsed() >= Duration::from_millis(self.debounce_ms)
+                last_sender == sender_id
+                    || last_time.elapsed() >= Duration::from_millis(self.debounce_ms)
             }
         }
     }
 
     /// Get the ID of the sender who last sent input, if any.
     pub async fn last_sender(&self) -> Option<String> {
-        self.last_input_by.lock().await.as_ref().map(|(id, _)| id.clone())
+        self.last_input_by
+            .lock()
+            .await
+            .as_ref()
+            .map(|(id, _)| id.clone())
     }
 
     /// Clear the queue and reset the last sender tracking.
