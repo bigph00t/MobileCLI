@@ -499,6 +499,19 @@ impl SessionManager {
                         session_id_clone
                     );
                     parser.user_sent_input();
+
+                    // ISSUE 5 FIX: Emit processing started immediately
+                    // This eliminates the 1-2 second delay before mobile shows thinking indicator
+                    let _ = app.emit(
+                        "activity",
+                        serde_json::json!({
+                            "sessionId": session_id_clone,
+                            "activityType": "thinking",
+                            "content": "Processing...",
+                            "isStreaming": true,
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                        }),
+                    );
                 }
 
                 match reader.read(&mut buffer) {
@@ -1217,6 +1230,19 @@ impl SessionManager {
                         session_id_clone
                     );
                     parser.user_sent_input();
+
+                    // ISSUE 5 FIX: Emit processing started immediately
+                    // This eliminates the 1-2 second delay before mobile shows thinking indicator
+                    let _ = app.emit(
+                        "activity",
+                        serde_json::json!({
+                            "sessionId": session_id_clone,
+                            "activityType": "thinking",
+                            "content": "Processing...",
+                            "isStreaming": true,
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                        }),
+                    );
                 }
 
                 match reader.read(&mut buffer) {
