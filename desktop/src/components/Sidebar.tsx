@@ -11,6 +11,14 @@ const CLI_BADGES: Record<string, { label: string; color: string }> = {
   opencode: { label: 'O', color: 'bg-indigo-500' },
 };
 
+// CLI display names for status text
+const CLI_NAMES: Record<string, string> = {
+  claude: 'Claude',
+  gemini: 'Gemini',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
+
 // Context menu state
 interface ContextMenuState {
   x: number;
@@ -352,9 +360,12 @@ function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCo
     displayState = 'completed';
   }
 
+  // Get CLI display name
+  const cliName = CLI_NAMES[session.cliType] || 'CLI';
+
   // Status colors and text
   const statusConfig = {
-    working: { color: 'bg-[#9ece6a]', text: 'Claude working...' },
+    working: { color: 'bg-[#9ece6a]', text: `${cliName} working...` },
     awaiting_approval: { color: 'bg-[#e0af68]', text: 'Awaiting approval' },
     awaiting_response: { color: 'bg-[#e0af68]', text: 'Awaiting response' },
     completed: { color: 'bg-[#565f89]', text: 'Completed' },

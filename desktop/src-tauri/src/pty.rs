@@ -121,11 +121,30 @@ fn detect_and_emit_thinking(cleaned: &str, session_id: &str, app: &AppHandle) {
             continue;
         }
 
+        // CRITICAL: Skip hook output - these should NOT be classified as thinking
+        // Hook patterns include: "Running hooks...", "hook success", "PostToolUse:", etc.
+        let lower_trimmed = trimmed.to_lowercase();
+        let is_hook_output = lower_trimmed.contains("hook")
+            || lower_trimmed.contains("posttooluse")
+            || lower_trimmed.contains("pretooluse")
+            || lower_trimmed.contains("sessionstart")
+            || lower_trimmed.contains("sessionstop")
+            || lower_trimmed.contains("ran ")  // "Ran 3/6 hooks"
+            || (lower_trimmed.contains('/') && lower_trimmed.chars().filter(|c| c.is_ascii_digit()).count() >= 2)  // "2/6" pattern
+            || lower_trimmed.contains("success")
+            || lower_trimmed.contains("failed:");
+
+        if is_hook_output {
+            continue;
+        }
+
         // Strip spinner characters from the beginning for detection
         let mut content_to_check = trimmed;
+        let mut has_spinner_prefix = false;
         for c in SPINNER_CHARS {
             if let Some(rest) = trimmed.strip_prefix(*c) {
                 content_to_check = rest.trim_start();
+                has_spinner_prefix = true;
                 break;
             }
         }
@@ -143,8 +162,9 @@ fn detect_and_emit_thinking(cleaned: &str, session_id: &str, app: &AppHandle) {
         }
 
         // Check for dynamic progress messages (lines ending with ... that look like status)
-        // These are typically short action descriptions
-        if !is_thinking && content_to_check.ends_with("...") && content_to_check.len() < 100 {
+        // TIGHTENED: Only trigger if line has spinner prefix - prevents false positives
+        // like "Running stop hooks... 2/6" which don't have spinners
+        if !is_thinking && has_spinner_prefix && content_to_check.ends_with("...") && content_to_check.len() < 100 {
             // Filter out lines that are actual content (have response markers)
             // Progress messages are typically clean status text
             let has_special_chars = content_to_check
