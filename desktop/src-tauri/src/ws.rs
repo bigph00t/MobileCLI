@@ -280,6 +280,9 @@ pub enum ClientMessage {
         session_id: String,
         text: String,
         cursor_position: Option<usize>,
+        /// Sender ID to identify the source device (for echo prevention)
+        #[serde(default)]
+        sender_id: Option<String>,
     },
     /// Heartbeat ping - client sends to check connection health
     Ping,
@@ -393,6 +396,12 @@ pub enum ServerMessage {
         text: String,
         /// Cursor position in the input field
         cursor_position: Option<usize>,
+        /// Sender ID to identify the source device (for echo prevention)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sender_id: Option<String>,
+        /// Timestamp when the input was typed
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
     },
     /// Heartbeat pong - server responds to ping to confirm connection is alive
     Pong,
@@ -766,11 +775,13 @@ pub async fn start_server(
     app.listen("input-state", move |event| {
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             let text = payload["text"].as_str().unwrap_or("").to_string();
-            tracing::debug!("Broadcasting input-state: {} chars", text.len());
+            tracing::debug!("Broadcasting input-state: {} chars, sender: {:?}", text.len(), payload["senderId"].as_str());
             let msg = ServerMessage::InputState {
                 session_id: payload["sessionId"].as_str().unwrap_or("").to_string(),
                 text,
                 cursor_position: payload["cursorPosition"].as_u64().map(|v| v as usize),
+                sender_id: payload["senderId"].as_str().map(String::from),
+                timestamp: payload["timestamp"].as_u64(),
             };
             let _ = broadcast_tx_clone9.send(msg);
         }
@@ -1658,14 +1669,19 @@ async fn handle_client_message(
             session_id,
             text,
             cursor_position,
+            sender_id,
         } => {
             // Broadcast input state to all other clients (for real-time input sync)
+            // Include sender_id and timestamp so receivers can filter their own echoes
+            let timestamp = chrono::Utc::now().timestamp_millis() as u64;
             let _ = app.emit(
                 "input-state",
                 serde_json::json!({
                     "sessionId": session_id,
                     "text": text,
                     "cursorPosition": cursor_position,
+                    "senderId": sender_id,
+                    "timestamp": timestamp,
                 }),
             );
             // Return the same state as acknowledgment
@@ -1673,6 +1689,8 @@ async fn handle_client_message(
                 session_id,
                 text,
                 cursor_position,
+                sender_id,
+                timestamp: Some(timestamp),
             }
         }
         ClientMessage::Ping => {

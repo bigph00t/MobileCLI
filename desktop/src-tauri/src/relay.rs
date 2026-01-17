@@ -983,14 +983,18 @@ pub async fn start_relay(
                                                         }
                                                     }
                                                 }
-                                                ClientMessage::SyncInputState { session_id, text, cursor_position } => {
+                                                ClientMessage::SyncInputState { session_id, text, cursor_position, sender_id } => {
                                                     // Emit input state event for broadcasting to other clients
+                                                    // Include sender_id and timestamp for echo prevention
+                                                    let timestamp = chrono::Utc::now().timestamp_millis() as u64;
                                                     let _ = app_clone.emit(
                                                         "input-state",
                                                         serde_json::json!({
                                                             "sessionId": session_id,
                                                             "text": text,
                                                             "cursorPosition": cursor_position,
+                                                            "senderId": sender_id,
+                                                            "timestamp": timestamp,
                                                         }),
                                                     );
                                                     // Send acknowledgment back
@@ -998,6 +1002,8 @@ pub async fn start_relay(
                                                         session_id: session_id.clone(),
                                                         text: text.clone(),
                                                         cursor_position: *cursor_position,
+                                                        sender_id: sender_id.clone(),
+                                                        timestamp: Some(timestamp),
                                                     };
                                                     if let Ok(json) = serde_json::to_string(&msg) {
                                                         if let Ok(encrypted) = encrypt_message(&key_response, &json) {

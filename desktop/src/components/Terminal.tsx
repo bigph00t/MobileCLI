@@ -118,6 +118,9 @@ interface TerminalInstance {
 
 const terminals = new Map<string, TerminalInstance>();
 
+// Generate unique sender ID for this desktop instance (for echo prevention in multi-device sync)
+const DESKTOP_SENDER_ID = `desktop-${crypto.randomUUID().slice(0, 8)}`;
+
 // Emit input state to sync with mobile clients
 async function emitInputState(sessionId: string, text: string, cursorPosition: number) {
   try {
@@ -125,6 +128,8 @@ async function emitInputState(sessionId: string, text: string, cursorPosition: n
       sessionId,
       text,
       cursorPosition,
+      senderId: DESKTOP_SENDER_ID,
+      timestamp: Date.now(),
     });
   } catch (e) {
     console.error('Failed to emit input state:', e);
@@ -568,32 +573,21 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
             return;
           }
 
+          // Simple echo prevention - ignore our own messages
+          if (event.payload.senderId === DESKTOP_SENDER_ID) {
+            return;
+          }
+
           const instance = terminals.get(sessionId);
           if (!instance?.initialized) return;
 
           const newText = event.payload.text;
-          const currentText = instance.inputBuffer;
-
-          // Only sync if it came from mobile (different from local state)
-          // This prevents echo loops
-          if (newText === currentText) return;
-
-          console.log('[Terminal] Syncing input from mobile:', newText);
 
           // Update local tracking
           instance.inputBuffer = newText;
           instance.cursorPosition = event.payload.cursorPosition ?? newText.length;
 
-          // To show mobile input in terminal, we need to clear current line and write new text
-          // Send escape sequence to clear line from cursor to end, then move to start of input
-          // This simulates the mobile's input appearing in the terminal
-
-          // NOTE: We intentionally do NOT send synced input to PTY here.
-          // Mobile will send the final message via SendInput when user presses Enter.
-          // Sending each synced keystroke to PTY would cause duplicate/mangled input.
-          // The TypingIndicator component shows users that mobile is typing.
-          // We just track the state in inputBuffer for sync echo prevention.
-          console.log('[Terminal] Input synced from mobile (visual only):', newText);
+          console.log('[Terminal] Remote input from:', event.payload.senderId, ':', newText.slice(0, 50));
         }
       );
     };
