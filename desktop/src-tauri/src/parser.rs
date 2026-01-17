@@ -240,8 +240,27 @@ impl OutputParser {
         // Check if CLI is still thinking - uses CLI-specific patterns
         // Only check CURRENT chunk, not the accumulated buffer
         // This prevents false positives from old thinking messages in the buffer
+        //
+        // CRITICAL: Filter out hook output lines BEFORE checking thinking patterns
+        // Hook output like "Running stop hooks..." or "SessionStart hook success"
+        // could contain keywords like "thinking" or "error" that cause false positives
+        let filtered_text: String = text
+            .lines()
+            .filter(|line| {
+                let lower = line.to_lowercase();
+                // Skip lines that look like hook output
+                !(lower.contains("hook")
+                    || lower.contains("posttooluse")
+                    || lower.contains("pretooluse")
+                    || lower.contains("sessionstart")
+                    || lower.contains("sessionstop")
+                    || (lower.contains('/') && lower.chars().filter(|c| c.is_ascii_digit()).count() >= 2))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let thinking_patterns = self.get_thinking_patterns();
-        let is_still_thinking = thinking_patterns.iter().any(|p| text.contains(p));
+        let is_still_thinking = thinking_patterns.iter().any(|p| filtered_text.contains(p));
 
         // Finalize response when we see a prompt and we have accumulated content
         // This ensures responses are emitted even if the ● character wasn't detected
