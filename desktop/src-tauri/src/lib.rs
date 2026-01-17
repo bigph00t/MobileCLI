@@ -192,11 +192,12 @@ mod commands {
     pub async fn get_available_clis() -> Result<Vec<CliInfo>, String> {
         use std::process::Command;
 
+        // Run `which` through a login shell to inherit user's PATH (nvm, etc.)
         let check_installed = |cmd: &str| -> bool {
-            Command::new("which")
-                .arg(cmd)
-                .output()
-                .map(|o| o.status.success())
+            Command::new("bash")
+                .args(["-lc", &format!("which {} >/dev/null 2>&1", cmd)])
+                .status()
+                .map(|s| s.success())
                 .unwrap_or(false)
         };
 
@@ -381,6 +382,40 @@ mod commands {
         let mut manager = state.session_manager.write().await;
         manager.stop_session(&session_id).await;
 
+        Ok(())
+    }
+
+    /// Delete a session from the database
+    ///
+    /// This removes the session and its messages from the local database.
+    /// Note: This does NOT delete Claude's JSONL files in ~/.claude/projects/.
+    #[tauri::command]
+    pub async fn delete_session(
+        state: tauri::State<'_, AppState>,
+        app: tauri::AppHandle,
+        session_id: String,
+    ) -> Result<(), String> {
+        // Make sure the session is not active
+        let session = state
+            .db
+            .get_session(&session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        if session.status == "active" {
+            return Err("Cannot delete an active session. Close it first.".to_string());
+        }
+
+        // Delete from database
+        state
+            .db
+            .delete_session(&session_id)
+            .map_err(|e| e.to_string())?;
+
+        // Emit event for UI updates
+        let _ = app.emit("session-deleted", serde_json::json!({ "sessionId": session_id }));
+
+        tracing::info!("Deleted session: {}", session_id);
         Ok(())
     }
 
@@ -1458,6 +1493,7 @@ pub fn run() {
             commands::send_tool_approval,
             commands::resize_pty,
             commands::close_session,
+            commands::delete_session,
             commands::get_messages,
             commands::get_ws_port,
             commands::is_ws_ready,

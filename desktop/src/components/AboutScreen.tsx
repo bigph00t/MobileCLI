@@ -48,7 +48,7 @@ export function AboutScreen({ onClose }: AboutScreenProps) {
           </p>
 
           <p className="text-[#a9b1d6] text-center text-sm mb-6">
-            Control Claude Code and Gemini CLI sessions from anywhere. All connections are end-to-end encrypted.
+            Control AI coding assistant sessions from anywhere. Supports Claude, Gemini, Codex, and OpenCode. All connections are end-to-end encrypted.
           </p>
 
           {/* Links */}

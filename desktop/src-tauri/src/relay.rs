@@ -443,6 +443,7 @@ pub async fn start_relay(
                 content: payload["content"].as_str().unwrap_or("").to_string(),
                 tool_name: payload["toolName"].as_str().map(String::from),
                 is_complete: payload["isComplete"].as_bool(),
+                client_msg_id: payload["clientMsgId"].as_str().map(String::from),
             };
             if let Ok(json) = serde_json::to_string(&msg) {
                 if let Ok(encrypted) = encrypt_message(&key_msg, &json) {
@@ -666,13 +667,14 @@ pub async fn start_relay(
                                         if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&decrypted) {
                                             // Emit the same events as local WS would
                                             match &client_msg {
-                                                ClientMessage::SendInput { session_id, text, raw } => {
+                                                ClientMessage::SendInput { session_id, text, raw, client_msg_id } => {
                                                     let _ = app_clone.emit(
                                                         "send-input",
                                                         serde_json::json!({
                                                             "sessionId": session_id,
                                                             "text": text,
                                                             "raw": raw,
+                                                            "clientMsgId": client_msg_id,
                                                         }),
                                                     );
                                                 }

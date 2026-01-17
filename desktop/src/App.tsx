@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import Sidebar from './components/Sidebar';
@@ -175,6 +175,36 @@ function App() {
       }
     });
 
+    // FIX FOR ISSUE 1 & 6: Listen for waiting state requests from mobile
+    // When mobile subscribes to a session, send the current waiting state
+    const unlistenRequestWaitingState = listen<{
+      sessionId: string;
+    }>('request-waiting-state', async (event) => {
+      const { sessionId } = event.payload;
+      const waitingState = useSessionStore.getState().waitingStates[sessionId];
+
+      console.log('[App] Received request-waiting-state for session', sessionId, 'current state:', waitingState);
+
+      // Emit the current waiting state so mobile can sync
+      // If there's a waiting state, emit it as waiting-for-input event
+      // If no waiting state, emit waiting-cleared to ensure mobile is in sync
+      if (waitingState && waitingState.waitType) {
+        await emit('waiting-for-input', {
+          sessionId,
+          timestamp: waitingState.timestamp,
+          promptContent: waitingState.promptContent || '',
+        });
+        console.log('[App] Sent waiting-for-input to mobile for session', sessionId);
+      } else {
+        // No waiting state - send cleared to ensure mobile shows correct status
+        await emit('waiting-cleared', {
+          sessionId,
+          timestamp: new Date().toISOString(),
+        });
+        console.log('[App] Sent waiting-cleared to mobile for session', sessionId);
+      }
+    });
+
     return () => {
       unlistenPty.then((fn) => fn());
       unlistenSessionCreated.then((fn) => fn());
@@ -185,6 +215,7 @@ function App() {
       unlistenWaitingForInput.then((fn) => fn());
       unlistenWaitingCleared.then((fn) => fn());
       unlistenMessage.then((fn) => fn());
+      unlistenRequestWaitingState.then((fn) => fn());
     };
   }, []);
 
@@ -262,7 +293,7 @@ function App() {
                 Welcome to MobileCLI
               </h2>
               <p className="text-[#565f89] mb-6 max-w-md">
-                Control AI coding assistants from anywhere. Create a session to start working with Claude Code.
+                Control AI coding assistants from anywhere. Create a session to start working.
               </p>
               <button
                 onClick={async () => {
@@ -272,7 +303,9 @@ function App() {
                     title: 'Select Project Folder',
                   });
                   if (selected) {
-                    await createSession(selected as string);
+                    // Use default CLI from settings
+                    const savedDefault = localStorage.getItem('defaultCli');
+                    await createSession(selected as string, undefined, savedDefault || 'claude');
                   }
                 }}
                 className="px-6 py-2 bg-[#7aa2f7] hover:bg-[#89b4fa] text-[#1a1b26] rounded-lg font-medium transition-colors"

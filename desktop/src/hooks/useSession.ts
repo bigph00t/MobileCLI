@@ -9,7 +9,7 @@ export interface Session {
   lastActiveAt: string;
   status: 'active' | 'idle' | 'closed';
   conversationId?: string | null;
-  cliType: 'claude' | 'gemini';
+  cliType: 'claude' | 'gemini' | 'codex' | 'opencode';
 }
 
 export interface CliInfo {
@@ -52,6 +52,7 @@ interface SessionState {
   setActiveSession: (sessionId: string | null) => void;
   createSession: (projectPath: string, name?: string, cliType?: string) => Promise<Session>;
   closeSession: (sessionId: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
   resumeSession: (sessionId: string) => Promise<Session>;
   fetchMessages: (sessionId: string) => Promise<void>;
   addMessage: (sessionId: string, message: Message) => void;
@@ -139,6 +140,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     } catch (e) {
       set({ error: String(e) });
+    }
+  },
+
+  deleteSession: async (sessionId) => {
+    try {
+      await invoke('delete_session', { sessionId });
+      set((state) => ({
+        sessions: state.sessions.filter((s) => s.id !== sessionId),
+        activeSessionId:
+          state.activeSessionId === sessionId ? null : state.activeSessionId,
+        // Also remove messages for this session
+        messages: Object.fromEntries(
+          Object.entries(state.messages).filter(([id]) => id !== sessionId)
+        ),
+      }));
+    } catch (e) {
+      set({ error: String(e) });
+      throw e; // Re-throw to let caller handle
     }
   },
 

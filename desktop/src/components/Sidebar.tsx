@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { clsx } from 'clsx';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Session, WaitingState, useSessionStore } from '../hooks/useSession';
@@ -7,7 +7,16 @@ import { Session, WaitingState, useSessionStore } from '../hooks/useSession';
 const CLI_BADGES: Record<string, { label: string; color: string }> = {
   claude: { label: 'C', color: 'bg-orange-500' },
   gemini: { label: 'G', color: 'bg-blue-500' },
+  codex: { label: 'X', color: 'bg-green-500' },
+  opencode: { label: 'O', color: 'bg-indigo-500' },
 };
+
+// Context menu state
+interface ContextMenuState {
+  x: number;
+  y: number;
+  session: Session;
+}
 
 interface SidebarProps {
   sessions: Session[];
@@ -26,11 +35,66 @@ export default function Sidebar({
   onOpenAbout,
   onOpenHelp,
 }: SidebarProps) {
-  const { createSession, resumeSession, fetchAvailableClis, availableClis, waitingStates } = useSessionStore();
+  const { createSession, resumeSession, closeSession, deleteSession, fetchAvailableClis, availableClis, waitingStates } = useSessionStore();
   const [isCreating, setIsCreating] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [showCliPicker, setShowCliPicker] = useState(false);
-  const [pendingProjectPath, setPendingProjectPath] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [contextMenu]);
+
+  // Handle context menu actions
+  const handleCloseSession = async () => {
+    if (!contextMenu) return;
+    try {
+      await closeSession(contextMenu.session.id);
+      if (activeSessionId === contextMenu.session.id) {
+        onSelectSession(null);
+      }
+    } catch (e) {
+      console.error('Failed to close session:', e);
+    }
+    setContextMenu(null);
+  };
+
+  const handleDeleteSession = async () => {
+    if (!contextMenu) return;
+    if (!confirm(`Delete session "${contextMenu.session.name}"? This cannot be undone.`)) {
+      setContextMenu(null);
+      return;
+    }
+    try {
+      await deleteSession(contextMenu.session.id);
+      if (activeSessionId === contextMenu.session.id) {
+        onSelectSession(null);
+      }
+    } catch (e) {
+      console.error('Failed to delete session:', e);
+      alert('Failed to delete session: ' + String(e));
+    }
+    setContextMenu(null);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, session: Session) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      session,
+    });
+  };
 
   // Fetch available CLIs on mount
   useEffect(() => {
@@ -51,41 +115,21 @@ export default function Sidebar({
 
       if (!selected) return; // User cancelled
 
-      // If multiple CLIs are installed, show picker
-      const installedClis = availableClis.filter(cli => cli.installed);
-      if (installedClis.length > 1) {
-        setPendingProjectPath(selected as string);
-        setShowCliPicker(true);
-      } else {
-        // Only one CLI installed, use it directly
-        setIsCreating(true);
-        // Use saved default or first installed CLI
-        const savedDefault = localStorage.getItem('defaultCli');
-        const cliType = installedClis.find(c => c.id === savedDefault)?.id
-          || installedClis[0]?.id
-          || 'claude';
-        await createSession(selected as string, undefined, cliType);
-        setIsCreating(false);
-      }
-    } catch (e) {
-      console.error('Failed to create session:', e);
-      alert('Error: ' + String(e));
-      setIsCreating(false);
-    }
-  };
+      setIsCreating(true);
 
-  const handleCliSelect = async (cliType: string) => {
-    if (!pendingProjectPath) return;
-    setShowCliPicker(false);
-    setIsCreating(true);
-    try {
-      await createSession(pendingProjectPath, undefined, cliType);
+      // Always use the default CLI from settings (no picker)
+      const installedClis = availableClis.filter(cli => cli.installed);
+      const savedDefault = localStorage.getItem('defaultCli');
+      const cliType = installedClis.find(c => c.id === savedDefault)?.id
+        || installedClis[0]?.id
+        || 'claude';
+
+      await createSession(selected as string, undefined, cliType);
+      setIsCreating(false);
     } catch (e) {
       console.error('Failed to create session:', e);
       alert('Error: ' + String(e));
-    } finally {
       setIsCreating(false);
-      setPendingProjectPath(null);
     }
   };
 
@@ -142,46 +186,6 @@ export default function Sidebar({
         </button>
       </div>
 
-      {/* CLI Picker Modal */}
-      {showCliPicker && (
-        <div className="p-3 border-b border-[#414868]/50 bg-[#1a1b26]">
-          <div className="text-xs font-medium text-[#a9b1d6] mb-2">
-            Select CLI:
-          </div>
-          <div className="space-y-1">
-            {availableClis
-              .filter(cli => cli.installed)
-              .map(cli => {
-                const badge = CLI_BADGES[cli.id] || { label: '?', color: 'bg-gray-500' };
-                return (
-                  <button
-                    key={cli.id}
-                    onClick={() => handleCliSelect(cli.id)}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#24283b] transition-colors"
-                  >
-                    <span className={`w-5 h-5 rounded text-white text-xs font-bold flex items-center justify-center ${badge.color}`}>
-                      {badge.label}
-                    </span>
-                    <span className="text-sm text-[#c0caf5]">{cli.name}</span>
-                    {!cli.supportsResume && (
-                      <span className="text-xs text-[#565f89] ml-auto">(no resume)</span>
-                    )}
-                  </button>
-                );
-              })}
-          </div>
-          <button
-            onClick={() => {
-              setShowCliPicker(false);
-              setPendingProjectPath(null);
-            }}
-            className="w-full mt-2 text-xs text-[#565f89] hover:text-[#a9b1d6]"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-
       {/* Session List */}
       <div className="flex-1 overflow-y-auto">
         {/* Active Sessions */}
@@ -198,6 +202,7 @@ export default function Sidebar({
                 session={session}
                 isActive={session.id === activeSessionId}
                 onClick={() => onSelectSession(session.id)}
+                onContextMenu={handleContextMenu}
                 isCollapsed={isCollapsed}
                 waitingState={waitingStates[session.id]}
                 isHistory={false}
@@ -221,6 +226,7 @@ export default function Sidebar({
                 isActive={session.id === activeSessionId}
                 onClick={() => onSelectSession(session.id)}
                 onResume={session.conversationId ? () => resumeSession(session.id) : undefined}
+                onContextMenu={handleContextMenu}
                 isCollapsed={isCollapsed}
                 isHistory={true}
               />
@@ -276,6 +282,40 @@ export default function Sidebar({
           </div>
         </div>
       </div>
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="fixed bg-[#1a1b26] border border-[#414868] rounded-lg shadow-xl py-1 z-50 min-w-[140px]"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          <div className="px-3 py-1.5 text-xs text-[#565f89] border-b border-[#414868]/50 truncate max-w-[180px]">
+            {contextMenu.session.name}
+          </div>
+          {contextMenu.session.status !== 'closed' ? (
+            <button
+              onClick={handleCloseSession}
+              className="w-full text-left px-3 py-2 text-sm text-[#c0caf5] hover:bg-[#24283b] flex items-center gap-2 transition-colors"
+            >
+              <svg className="w-4 h-4 text-[#e0af68]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              Close Session
+            </button>
+          ) : (
+            <button
+              onClick={handleDeleteSession}
+              className="w-full text-left px-3 py-2 text-sm text-[#f7768e] hover:bg-[#24283b] flex items-center gap-2 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Delete Session
+            </button>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
@@ -285,12 +325,13 @@ interface SessionItemProps {
   isActive: boolean;
   onClick: () => void;
   onResume?: () => void;
+  onContextMenu?: (e: React.MouseEvent, session: Session) => void;
   isCollapsed?: boolean;
   waitingState?: WaitingState;
   isHistory?: boolean;
 }
 
-function SessionItem({ session, isActive, onClick, onResume, isCollapsed, waitingState, isHistory }: SessionItemProps) {
+function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCollapsed, waitingState, isHistory }: SessionItemProps) {
   const [isResuming, setIsResuming] = useState(false);
 
   // Determine display state based on waiting state and session status
@@ -345,13 +386,14 @@ function SessionItem({ session, isActive, onClick, onResume, isCollapsed, waitin
     return (
       <div
         onClick={onClick}
+        onContextMenu={onContextMenu ? (e) => onContextMenu(e, session) : undefined}
         className={clsx(
           'w-8 h-8 mx-auto mb-1 rounded-lg flex items-center justify-center cursor-pointer relative',
           'hover:bg-[#24283b] transition-colors duration-150',
           isActive && 'bg-[#24283b]',
           isHistory && 'opacity-60'
         )}
-        title={`${session.name} - ${projectName} (${session.cliType})${config.text ? ` - ${config.text}` : ''}`}
+        title={`${session.name} - ${projectName} (${session.cliType})${config.text ? ` - ${config.text}` : ''} (Right-click for options)`}
       >
         <span className={clsx('w-5 h-5 rounded text-white text-xs font-bold flex items-center justify-center', cliBadge.color)}>
           {cliBadge.label}
@@ -366,6 +408,7 @@ function SessionItem({ session, isActive, onClick, onResume, isCollapsed, waitin
   return (
     <div
       onClick={onClick}
+      onContextMenu={onContextMenu ? (e) => onContextMenu(e, session) : undefined}
       className={clsx(
         'w-full text-left px-3 py-2 rounded-lg transition-colors duration-150 cursor-pointer',
         'hover:bg-[#24283b]',

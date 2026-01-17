@@ -1357,8 +1357,19 @@ async fn handle_client_message(
                     "sessionId": session_id,
                 }),
             );
+
+            // FIX FOR ISSUE 1 & 6: Also request the current waiting state
+            // This ensures mobile sees the correct status (awaiting_response vs working)
+            // when subscribing to a session that's already waiting for input
+            let _ = app.emit(
+                "request-waiting-state",
+                serde_json::json!({
+                    "sessionId": session_id,
+                }),
+            );
+
             tracing::info!(
-                "Mobile subscribed to session {}, requesting current input state",
+                "Mobile subscribed to session {}, requesting current input and waiting state",
                 session_id
             );
 

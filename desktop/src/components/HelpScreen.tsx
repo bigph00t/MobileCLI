@@ -59,7 +59,7 @@ export function HelpScreen({ onClose }: HelpScreenProps) {
           <div className="space-y-3">
             <HelpItem
               question="How do I connect my mobile app?"
-              answer="Go to Settings (gear icon) and choose a connection method: Local (same WiFi) or Relay (anywhere). Scan the QR code with the MobileCLI mobile app."
+              answer="Go to Settings (gear icon), then Connectivity tab. Choose a connection method: Local (same WiFi), Relay (anywhere, E2E encrypted), or Tailscale (private VPN). Scan the QR code with the MobileCLI mobile app."
             />
 
             <HelpItem
@@ -79,12 +79,12 @@ export function HelpScreen({ onClose }: HelpScreenProps) {
 
             <HelpItem
               question="Which CLIs are supported?"
-              answer="MobileCLI supports Claude Code and Gemini CLI. Make sure they are installed on your computer. You can select your preferred CLI in Settings."
+              answer="MobileCLI supports Claude, Gemini, Codex, and OpenCode. Make sure they are installed on your computer. You can select your default CLI in Settings > General."
             />
 
             <HelpItem
               question="How do I approve tool calls?"
-              answer="When Claude or Gemini requests to use a tool (like running a command), you'll see a notification on your mobile device. You can approve or reject it with a tap."
+              answer="When your AI assistant requests to use a tool (like running a command), you'll see a notification on your mobile device. You can approve or reject it with a tap."
             />
 
             <HelpItem
