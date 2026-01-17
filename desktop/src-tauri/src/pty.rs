@@ -203,10 +203,12 @@ fn detect_and_emit_thinking(cleaned: &str, session_id: &str, app: &AppHandle) {
         if is_thinking && !thinking_content.is_empty() {
             // Clean up the content - extract just the thinking word/phrase
             // Remove parenthetical info like "(ctrl+c to interrupt · thinking)"
+            // Also handle malformed content like "thinking)" where opening paren is missing
             let clean_content = if let Some(paren_pos) = thinking_content.find('(') {
                 thinking_content[..paren_pos].trim().to_string()
             } else {
-                thinking_content.clone()
+                // Strip trailing ) if present (handles "thinking)" from malformed content)
+                thinking_content.trim_end_matches(')').trim().to_string()
             };
 
             // Remove leading special characters (✢, *, etc.)
