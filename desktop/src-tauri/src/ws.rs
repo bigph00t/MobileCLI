@@ -24,6 +24,19 @@ const MAX_TOTAL_CONNECTIONS: usize = 50;
 type Tx = mpsc::UnboundedSender<Message>;
 type PeerMap = Arc<RwLock<HashMap<SocketAddr, Tx>>>;
 
+/// Recent session events queue - replays important events to new subscribers
+/// Solves the timing issue where session events fire before mobile connects
+#[derive(Clone)]
+struct RecentSessionEvent {
+    message: ServerMessage,
+    timestamp: std::time::Instant,
+}
+
+type RecentEventsQueue = Arc<RwLock<Vec<RecentSessionEvent>>>;
+
+/// Queue lifetime - events older than this are cleaned up
+const EVENT_QUEUE_TTL_SECS: u64 = 5;
+
 /// Check if a new connection should be accepted based on rate limits
 fn check_connection_limits(
     peers: &HashMap<SocketAddr, Tx>,
@@ -452,6 +465,9 @@ pub async fn start_server(
 
     let peers: PeerMap = Arc::new(RwLock::new(HashMap::new()));
 
+    // Recent events queue for session events - replays to new subscribers
+    let recent_events: RecentEventsQueue = Arc::new(RwLock::new(Vec::new()));
+
     // Channel for broadcasting events to all clients
     let (broadcast_tx, _) = broadcast::channel::<ServerMessage>(100);
 
@@ -528,7 +544,9 @@ pub async fn start_server(
     });
 
     // Listen for session-created events (to sync with mobile)
+    // Also queue for replay to late-connecting subscribers
     let broadcast_tx_clone4 = broadcast_tx.clone();
+    let recent_events_clone4 = recent_events.clone();
     app.listen("session-created", move |event| {
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             let msg = ServerMessage::SessionCreated {
@@ -543,12 +561,26 @@ pub async fn start_server(
                 },
             };
             tracing::info!("Broadcasting session-created event to mobile clients");
-            let _ = broadcast_tx_clone4.send(msg);
+            let _ = broadcast_tx_clone4.send(msg.clone());
+
+            // Queue for replay to late-connecting subscribers
+            if let Ok(mut queue) = recent_events_clone4.try_write() {
+                // Clean up old events
+                let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(EVENT_QUEUE_TTL_SECS);
+                queue.retain(|e| e.timestamp > cutoff);
+                // Add new event
+                queue.push(RecentSessionEvent {
+                    message: msg,
+                    timestamp: std::time::Instant::now(),
+                });
+            }
         }
     });
 
     // Listen for session-resumed events (to sync desktop when mobile resumes)
+    // Also queue for replay to late-connecting subscribers
     let broadcast_tx_clone5 = broadcast_tx.clone();
+    let recent_events_clone5 = recent_events.clone();
     app.listen("session-resumed", move |event| {
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             let msg = ServerMessage::SessionResumed {
@@ -563,19 +595,41 @@ pub async fn start_server(
                 },
             };
             tracing::info!("Broadcasting session-resumed event to all clients");
-            let _ = broadcast_tx_clone5.send(msg);
+            let _ = broadcast_tx_clone5.send(msg.clone());
+
+            // Queue for replay to late-connecting subscribers
+            if let Ok(mut queue) = recent_events_clone5.try_write() {
+                let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(EVENT_QUEUE_TTL_SECS);
+                queue.retain(|e| e.timestamp > cutoff);
+                queue.push(RecentSessionEvent {
+                    message: msg,
+                    timestamp: std::time::Instant::now(),
+                });
+            }
         }
     });
 
     // Listen for session-closed events (to sync all clients when session is closed)
+    // Also queue for replay to late-connecting subscribers
     let broadcast_tx_clone6 = broadcast_tx.clone();
+    let recent_events_clone6 = recent_events.clone();
     app.listen("session-closed", move |event| {
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             let msg = ServerMessage::SessionClosed {
                 session_id: payload["sessionId"].as_str().unwrap_or("").to_string(),
             };
             tracing::info!("Broadcasting session-closed event to all clients");
-            let _ = broadcast_tx_clone6.send(msg);
+            let _ = broadcast_tx_clone6.send(msg.clone());
+
+            // Queue for replay to late-connecting subscribers
+            if let Ok(mut queue) = recent_events_clone6.try_write() {
+                let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(EVENT_QUEUE_TTL_SECS);
+                queue.retain(|e| e.timestamp > cutoff);
+                queue.push(RecentSessionEvent {
+                    message: msg,
+                    timestamp: std::time::Instant::now(),
+                });
+            }
         }
     });
 
@@ -738,10 +792,11 @@ pub async fn start_server(
         let db = db.clone();
         let app = app.clone();
         let broadcast_rx = broadcast_tx.subscribe();
+        let recent_events = recent_events.clone();
 
         tokio::spawn(async move {
             if let Err(e) =
-                handle_connection(stream, addr, peers.clone(), db, app, broadcast_rx).await
+                handle_connection(stream, addr, peers.clone(), db, app, broadcast_rx, recent_events).await
             {
                 tracing::error!("Connection error for {}: {}", addr, e);
             }
@@ -761,6 +816,7 @@ async fn handle_connection(
     db: Arc<Database>,
     app: AppHandle,
     mut broadcast_rx: broadcast::Receiver<ServerMessage>,
+    recent_events: RecentEventsQueue,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws_stream = accept_async(stream).await?;
     tracing::info!("New WebSocket connection: {}", addr);
@@ -779,6 +835,26 @@ async fn handle_connection(
     ws_sender
         .send(Message::Text(serde_json::to_string(&welcome)?))
         .await?;
+
+    // Replay recent session events to this new connection
+    // This ensures mobile clients see sessions created just before they connected
+    {
+        let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(EVENT_QUEUE_TTL_SECS);
+        let queue = recent_events.read().await;
+        let recent_count = queue.iter().filter(|e| e.timestamp > cutoff).count();
+        if recent_count > 0 {
+            tracing::info!(
+                "Replaying {} recent session events to new client {}",
+                recent_count,
+                addr
+            );
+            for event in queue.iter().filter(|e| e.timestamp > cutoff) {
+                if let Ok(json) = serde_json::to_string(&event.message) {
+                    let _ = ws_sender.send(Message::Text(json)).await;
+                }
+            }
+        }
+    }
 
     // Spawn task to forward messages from channel to WebSocket
     let send_task = tokio::spawn(async move {
