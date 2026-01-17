@@ -11,6 +11,7 @@ mod gemini_watcher;
 mod input_coordinator;
 mod jsonl;
 mod jsonl_watcher;
+mod opencode_watcher;
 mod parser;
 mod pty;
 mod relay;

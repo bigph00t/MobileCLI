@@ -7,6 +7,7 @@ use crate::db::{CliType, Database};
 use crate::gemini;
 use crate::gemini_watcher::GeminiWatcher;
 use crate::jsonl_watcher::JsonlWatcher;
+use crate::opencode_watcher::{self, OpenCodeWatcher};
 use crate::parser::OutputParser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -27,6 +28,8 @@ enum CliWatcher {
     Codex(CodexWatcher),
     /// Gemini: JSON at ~/.gemini/tmp/{hash}/chats/session-*.json
     Gemini(GeminiWatcher),
+    /// OpenCode: Distributed JSON at ~/.local/share/opencode/storage/
+    OpenCode(OpenCodeWatcher),
 }
 
 impl CliWatcher {
@@ -35,6 +38,7 @@ impl CliWatcher {
             CliWatcher::Claude(w) => w.stop(),
             CliWatcher::Codex(w) => w.stop(),
             CliWatcher::Gemini(w) => w.stop(),
+            CliWatcher::OpenCode(w) => w.stop(),
         }
     }
 }
@@ -779,13 +783,66 @@ impl SessionManager {
                 }
             }
             CliType::OpenCode => {
-                // OpenCode uses a distributed file system that's more complex to watch
-                // For now, skip OpenCode file watching (would need multiple directory watchers)
-                tracing::info!(
-                    "OpenCode session {} - file watching not yet implemented",
-                    session_id
-                );
-                None
+                // OpenCode: Distributed storage at ~/.local/share/opencode/storage/
+                // Watch message and part directories for the session
+                let opencode_session = opencode_watcher::get_latest_session()
+                    .or_else(|| opencode_watcher::find_session_for_project(&project_path_for_watcher));
+
+                match opencode_session {
+                    Some(oc_session_id) => {
+                        match OpenCodeWatcher::new(
+                            session_id.clone(),
+                            oc_session_id.clone(),
+                            app_for_watcher,
+                        ) {
+                            Ok(watcher) => {
+                                tracing::info!(
+                                    "Created OpenCode watcher for session {}, OpenCode session: {}",
+                                    session_id,
+                                    oc_session_id
+                                );
+                                Some(CliWatcher::OpenCode(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to create OpenCode watcher for session {}: {}",
+                                    session_id,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        // No existing session - create watcher that will wait for session creation
+                        tracing::info!(
+                            "No OpenCode session found yet for {}, will watch for creation",
+                            session_id
+                        );
+                        // Use a placeholder session ID - watcher will detect actual session
+                        match OpenCodeWatcher::new(
+                            session_id.clone(),
+                            format!("pending_{}", conversation_id_for_watcher),
+                            app_for_watcher,
+                        ) {
+                            Ok(watcher) => {
+                                tracing::info!(
+                                    "Created OpenCode directory watcher for session {}",
+                                    session_id
+                                );
+                                Some(CliWatcher::OpenCode(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to create OpenCode watcher for session {}: {}",
+                                    session_id,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    }
+                }
             }
         };
 
@@ -1351,11 +1408,40 @@ impl SessionManager {
                 }
             }
             CliType::OpenCode => {
-                tracing::info!(
-                    "OpenCode resumed session {} - file watching not yet implemented",
-                    session_id
-                );
-                None
+                // OpenCode: Distributed storage at ~/.local/share/opencode/storage/
+                let opencode_session = opencode_watcher::get_latest_session()
+                    .or_else(|| opencode_watcher::find_session_for_project(&project_path_for_watcher));
+
+                match opencode_session {
+                    Some(oc_session_id) => {
+                        match OpenCodeWatcher::new(
+                            session_id.clone(),
+                            oc_session_id.clone(),
+                            app_for_watcher,
+                        ) {
+                            Ok(watcher) => {
+                                tracing::info!(
+                                    "Created OpenCode watcher for resumed session {}, OpenCode session: {}",
+                                    session_id,
+                                    oc_session_id
+                                );
+                                Some(CliWatcher::OpenCode(watcher))
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to create OpenCode watcher for resumed session {}: {}",
+                                    session_id,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!("Could not find OpenCode session for resume");
+                        None
+                    }
+                }
             }
         };
 
