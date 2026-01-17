@@ -89,79 +89,16 @@ For access outside your local network, enable the relay server:
 
 [Learn more about relay setup](https://mobilecli.app/docs/relay-setup)
 
-## Development
+## Supported CLIs
 
-### Prerequisites
+MobileCLI works with:
 
-- Node.js 18+
-- Rust 1.70+
-- Tauri CLI 2.0
-- Expo CLI (for mobile)
-
-### Desktop App
-
-```bash
-cd desktop
-npm install
-npm run tauri dev
-```
-
-### Mobile App
-
-```bash
-cd mobile
-npm install
-npx expo start
-```
-
-### Relay Server
-
-```bash
-cd relay
-cargo run
-```
-
-### Website
-
-```bash
-cd website
-npm install
-npm run dev
-```
-
-## Project Structure
-
-```
-MobileCLI/
-├── desktop/                    # Tauri desktop app
-│   ├── src/                    # React frontend
-│   │   ├── components/         # UI components
-│   │   └── hooks/              # State management
-│   └── src-tauri/              # Rust backend
-│       └── src/
-│           ├── config.rs       # Configuration persistence
-│           ├── db.rs           # SQLite database
-│           ├── pty.rs          # PTY management
-│           ├── jsonl.rs        # JSONL log parsing
-│           ├── ws.rs           # WebSocket server
-│           ├── relay.rs        # Relay client
-│           ├── client_mode.rs  # Client mode logic
-│           └── input_coordinator.rs  # Multi-device input
-├── mobile/                     # Expo mobile app
-│   ├── app/                    # Expo Router screens
-│   ├── components/             # UI components
-│   └── hooks/                  # State & sync
-├── relay/                      # Rust relay server
-│   └── src/
-│       └── main.rs
-├── website/                    # Astro marketing site
-│   └── src/
-│       └── pages/
-│           └── docs/           # Documentation
-└── shared/                     # Shared TypeScript types
-    ├── types.ts
-    └── protocol.ts
-```
+| CLI | Status | Notes |
+|-----|--------|-------|
+| **Claude Code** | ✅ Full Support | Primary CLI, all features |
+| **Gemini CLI** | ✅ Full Support | Session persistence, tool approval |
+| **Codex** | 🧪 Experimental | Basic session management |
+| **OpenCode** | 🧪 Experimental | Basic session management |
 
 ## Tech Stack
 
@@ -170,22 +107,25 @@ MobileCLI/
 | Desktop Framework | Tauri 2.0 |
 | Desktop Frontend | React + TypeScript + Tailwind |
 | Desktop Backend | Rust (tokio async runtime) |
-| PTY Management | portable-pty |
-| Database | SQLite (rusqlite) |
-| WebSocket | tokio-tungstenite |
 | Mobile Framework | Expo SDK 52 |
-| Mobile Navigation | Expo Router |
-| Mobile Styling | NativeWind (Tailwind) |
 | State Management | Zustand |
 | Relay Server | Rust (tokio + tokio-tungstenite) |
-| Website | Astro |
 
-## Building for Production
+## Building from Source (Desktop Only)
 
-### Desktop
+If you want to build the desktop app yourself:
+
+### Prerequisites
+
+- Node.js 18+
+- Rust 1.70+
+- Tauri CLI 2.0
+
+### Build
 
 ```bash
 cd desktop
+npm install
 npm run tauri build
 ```
 
@@ -193,21 +133,6 @@ Outputs:
 - macOS: `.dmg` and `.app`
 - Windows: `.exe` installer
 - Linux: `.AppImage` and `.deb`
-
-### Mobile
-
-```bash
-cd mobile
-eas build --platform ios
-eas build --platform android
-```
-
-### Relay Server
-
-```bash
-cd relay
-cargo build --release
-```
 
 ## Security
 
