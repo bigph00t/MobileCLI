@@ -1,6 +1,6 @@
 # MobileCLI
 
-**Control Claude Code and Gemini CLI from anywhere.**
+**Control Claude Code, Gemini CLI, and Codex from anywhere.**
 
 MobileCLI lets you manage your AI coding sessions from your phone, tablet, or secondary computer. Start a session on your desktop and continue from wherever you are.
 
@@ -11,11 +11,10 @@ MobileCLI lets you manage your AI coding sessions from your phone, tablet, or se
 ## Features
 
 - **Multi-Device Sync** - View and interact with sessions from any connected device in real-time
-- **QR Code Pairing** - Scan a QR code to securely connect your mobile device
-- **Host & Client Modes** - Run as a host (manages sessions) or client (connects to host)
-- **Relay Server** - Access sessions from anywhere, no port forwarding needed
-- **End-to-End Encryption** - All communication is encrypted
-- **Multi-CLI Support** - Works with Claude Code and Gemini CLI
+- **QR Code Pairing** - Scan a QR code to connect your mobile device
+- **Local & Remote Access** - Connect via local network or Tailscale VPN
+- **Multi-CLI Support** - Works with Claude Code, Gemini CLI, Codex, and OpenCode
+- **Tool Approval** - Approve or reject tool calls from your phone
 - **Native Apps** - Desktop (macOS, Windows, Linux) and mobile (iOS, Android)
 
 ## Architecture
@@ -32,21 +31,19 @@ MobileCLI lets you manage your AI coding sessions from your phone, tablet, or se
 │                            ┌──────▼──────┐                              │
 │                            │ Claude Code │                              │
 │                            │ Gemini CLI  │                              │
+│                            │ Codex       │                              │
 │                            └─────────────┘                              │
 └─────────────────────────────────────────────────────────────────────────┘
 
-                                    │
-                        ┌───────────▼───────────┐
-                        │   Relay Server        │  (optional)
-                        │   (MobileCLI Cloud)   │
-                        └───────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-             ┌──────────┐   ┌──────────┐   ┌──────────┐
-             │  Mobile  │   │  Laptop  │   │  Tablet  │
-             │  Client  │   │  Client  │   │  Client  │
-             └──────────┘   └──────────┘   └──────────┘
+                    Remote Access via Tailscale VPN
+┌─────────────────────────────────────────────────────────────────────────┐
+│                             Your Tailnet                                 │
+│                                                                          │
+│   ┌──────────────┐                              ┌──────────────┐        │
+│   │   Desktop    │◄────── Encrypted Tunnel ────►│   Mobile     │        │
+│   │   (Host)     │                              │   (Client)   │        │
+│   └──────────────┘                              └──────────────┘        │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -63,7 +60,7 @@ Download from [mobilecli.app/download](https://mobilecli.app/download):
 
 Launch MobileCLI and complete the setup wizard:
 1. Choose **Host Mode** (on your main development machine)
-2. MobileCLI will auto-detect Claude Code and Gemini CLI
+2. MobileCLI will auto-detect Claude Code, Gemini CLI, Codex, and OpenCode
 3. Generate a pairing QR code
 
 ### 3. Connect Your Mobile Device
@@ -78,16 +75,15 @@ Launch MobileCLI and complete the setup wizard:
 - Watch it appear on your mobile device
 - Send messages and approve tool use from anywhere
 
-## Remote Access with Relay
+## Remote Access with Tailscale
 
-For access outside your local network, enable the relay server:
+For access outside your local network, use Tailscale VPN:
 
-1. Go to **Settings → Relay** on your host
-2. Enable "Relay Connection"
-3. Re-scan the QR code on your mobile (it now includes relay URL)
-4. Access from any network!
-
-[Learn more about relay setup](https://mobilecli.app/docs/relay-setup)
+1. Install [Tailscale](https://tailscale.com/download) on both devices
+2. Sign in and connect to your Tailnet
+3. Go to **Settings → Connectivity → Tailscale** on desktop
+4. Scan the Tailscale QR code from your mobile app
+5. Access from any network with secure, encrypted tunnels!
 
 ## Supported CLIs
 
@@ -97,8 +93,8 @@ MobileCLI works with:
 |-----|--------|-------|
 | **Claude Code** | ✅ Full Support | Primary CLI, all features |
 | **Gemini CLI** | ✅ Full Support | Session persistence, tool approval |
-| **Codex** | 🧪 Experimental | Basic session management |
-| **OpenCode** | 🧪 Experimental | Basic session management |
+| **Codex** | ✅ Full Support | Session management, tool approval |
+| **OpenCode** | ✅ Full Support | Session management |
 
 ## Tech Stack
 
@@ -109,7 +105,6 @@ MobileCLI works with:
 | Desktop Backend | Rust (tokio async runtime) |
 | Mobile Framework | Expo SDK 52 |
 | State Management | Zustand |
-| Relay Server | Rust (tokio + tokio-tungstenite) |
 
 ## Building from Source (Desktop Only)
 
@@ -138,11 +133,10 @@ Outputs:
 
 MobileCLI prioritizes security:
 
-- **End-to-End Encryption** - Messages encrypted before leaving your device
+- **Local Network First** - Direct WebSocket connections on your LAN
+- **Tailscale Integration** - Secure remote access via WireGuard-based VPN
+- **No Cloud Required** - Your code and conversations stay on your devices
 - **Token Authentication** - Secure pairing with unique tokens
-- **Zero Knowledge Relay** - Relay server cannot read your messages
-- **TLS Transport** - All connections use TLS 1.3
-- **No Cloud Storage** - Your code and conversations stay on your devices
 
 ## Contributing
 

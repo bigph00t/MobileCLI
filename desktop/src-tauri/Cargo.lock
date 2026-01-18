@@ -2239,6 +2239,7 @@ dependencies = [
  "chrono",
  "crypto_secretbox",
  "futures-util",
+ "glob",
  "hex",
  "local-ip-address",
  "notify",

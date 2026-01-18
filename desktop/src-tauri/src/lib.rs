@@ -192,14 +192,86 @@ mod commands {
     #[tauri::command]
     pub async fn get_available_clis() -> Result<Vec<CliInfo>, String> {
         use std::process::Command;
+        use std::path::Path;
 
-        // Run `which` through a login shell to inherit user's PATH (nvm, etc.)
+        // Check if command is installed using multiple methods for cross-platform support
         let check_installed = |cmd: &str| -> bool {
-            Command::new("bash")
+            let home = std::env::var("HOME").unwrap_or_default();
+
+            // Method 1: Check common installation paths directly (fastest, most reliable)
+            let common_paths = [
+                format!("{home}/.nvm/versions/node/*/bin/{cmd}"),
+                format!("{home}/.local/bin/{cmd}"),
+                format!("{home}/.npm-global/bin/{cmd}"),
+                format!("{home}/.yarn/bin/{cmd}"),
+                format!("{home}/.bun/bin/{cmd}"),
+                format!("/usr/local/bin/{cmd}"),
+                format!("/usr/bin/{cmd}"),
+                format!("/opt/homebrew/bin/{cmd}"),
+            ];
+
+            for pattern in &common_paths {
+                if let Ok(mut paths) = glob::glob(pattern) {
+                    if paths.next().is_some() {
+                        tracing::debug!("Found {} via glob: {}", cmd, pattern);
+                        return true;
+                    }
+                }
+            }
+
+            // Method 2: Check if it's a direct path (non-glob patterns)
+            let direct_paths = [
+                format!("{home}/.local/bin/{cmd}"),
+                format!("{home}/.npm-global/bin/{cmd}"),
+                format!("/usr/local/bin/{cmd}"),
+                format!("/usr/bin/{cmd}"),
+            ];
+
+            for path in &direct_paths {
+                if Path::new(path).exists() {
+                    tracing::debug!("Found {} at path: {}", cmd, path);
+                    return true;
+                }
+            }
+
+            // Method 3: Try interactive bash shell (sources .bashrc which sets up nvm)
+            let bash_check = Command::new("bash")
+                .args(["-ic", &format!("which {} >/dev/null 2>&1", cmd)])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if bash_check {
+                tracing::debug!("Found {} via bash -ic", cmd);
+                return true;
+            }
+
+            // Method 4: Try zsh interactive shell (macOS default)
+            let zsh_check = Command::new("zsh")
+                .args(["-ic", &format!("which {} >/dev/null 2>&1", cmd)])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if zsh_check {
+                tracing::debug!("Found {} via zsh -ic", cmd);
+                return true;
+            }
+
+            // Method 5: Try login shells as last resort
+            let bash_login = Command::new("bash")
                 .args(["-lc", &format!("which {} >/dev/null 2>&1", cmd)])
                 .status()
                 .map(|s| s.success())
-                .unwrap_or(false)
+                .unwrap_or(false);
+
+            if bash_login {
+                tracing::debug!("Found {} via bash -lc", cmd);
+                return true;
+            }
+
+            tracing::debug!("CLI {} not found by any method", cmd);
+            false
         };
 
         Ok(vec![
