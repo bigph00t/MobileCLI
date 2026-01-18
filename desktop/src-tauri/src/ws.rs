@@ -24,6 +24,101 @@ const MAX_TOTAL_CONNECTIONS: usize = 50;
 type Tx = mpsc::UnboundedSender<Message>;
 type PeerMap = Arc<RwLock<HashMap<SocketAddr, Tx>>>;
 
+/// Push notification token storage
+#[derive(Debug, Clone)]
+pub struct PushToken {
+    pub token: String,
+    pub token_type: String, // "expo", "apns", or "fcm"
+    pub platform: String,   // "ios" or "android"
+    pub registered_at: std::time::Instant,
+}
+
+/// Global push token storage - stores tokens from all connected mobile clients
+pub static PUSH_TOKENS: std::sync::LazyLock<RwLock<Vec<PushToken>>> =
+    std::sync::LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Send push notifications to all registered mobile clients
+/// Uses Expo Push Service for expo tokens
+pub async fn send_push_notifications(
+    title: &str,
+    body: &str,
+    session_id: &str,
+    notification_type: &str,
+) {
+    let tokens = PUSH_TOKENS.read().await;
+    if tokens.is_empty() {
+        tracing::debug!("No push tokens registered, skipping push notification");
+        return;
+    }
+
+    tracing::info!(
+        "Sending push notification to {} devices: {} - {}",
+        tokens.len(),
+        title,
+        body
+    );
+
+    // Build notification payloads for Expo Push Service
+    let mut expo_messages: Vec<serde_json::Value> = Vec::new();
+
+    for token in tokens.iter() {
+        if token.token_type == "expo" {
+            // Expo Push Token format
+            expo_messages.push(serde_json::json!({
+                "to": token.token,
+                "title": title,
+                "body": body,
+                "sound": "default",
+                "badge": 1,
+                "data": {
+                    "sessionId": session_id,
+                    "type": notification_type,
+                },
+                // iOS-specific
+                "priority": "high",
+                "_contentAvailable": true,
+            }));
+        }
+        // TODO: Add native APNs support if needed
+    }
+
+    if expo_messages.is_empty() {
+        tracing::debug!("No expo tokens found, skipping Expo Push Service");
+        return;
+    }
+
+    // Send to Expo Push Service
+    let client = reqwest::Client::new();
+    match client
+        .post("https://exp.host/--/api/v2/push/send")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&expo_messages)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                tracing::info!("Push notifications sent successfully");
+                if let Ok(text) = response.text().await {
+                    tracing::debug!("Expo response: {}", text);
+                }
+            } else {
+                tracing::error!(
+                    "Failed to send push notifications: HTTP {}",
+                    response.status()
+                );
+                if let Ok(text) = response.text().await {
+                    tracing::error!("Expo error response: {}", text);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to send push notifications: {}", e);
+        }
+    }
+}
+
 /// Recent session events queue - replays important events to new subscribers
 /// Solves the timing issue where session events fire before mobile connects
 #[derive(Clone)]
@@ -286,6 +381,15 @@ pub enum ClientMessage {
     },
     /// Heartbeat ping - client sends to check connection health
     Ping,
+    /// Register push notification token from mobile client
+    RegisterPushToken {
+        /// The push notification token (Expo or native APNs/FCM)
+        token: String,
+        /// Token type: "expo" for Expo Push Token, "apns" for native iOS, "fcm" for native Android
+        token_type: String,
+        /// Platform: "ios" or "android"
+        platform: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -405,6 +509,11 @@ pub enum ServerMessage {
     },
     /// Heartbeat pong - server responds to ping to confirm connection is alive
     Pong,
+    /// Push token registered successfully
+    PushTokenRegistered {
+        token_type: String,
+        platform: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -528,13 +637,36 @@ pub async fn start_server(
     let broadcast_tx_clone3 = broadcast_tx.clone();
     app.listen("waiting-for-input", move |event| {
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let session_id = payload["sessionId"].as_str().unwrap_or("").to_string();
+            let timestamp = payload["timestamp"].as_str().unwrap_or("").to_string();
+            let prompt_content = payload["promptContent"].as_str().map(|s| s.to_string());
+
             let msg = ServerMessage::WaitingForInput {
-                session_id: payload["sessionId"].as_str().unwrap_or("").to_string(),
-                timestamp: payload["timestamp"].as_str().unwrap_or("").to_string(),
-                prompt_content: payload["promptContent"].as_str().map(|s| s.to_string()),
+                session_id: session_id.clone(),
+                timestamp,
+                prompt_content: prompt_content.clone(),
             };
             tracing::debug!("Broadcasting waiting-for-input event with prompt content");
             let _ = broadcast_tx_clone3.send(msg);
+
+            // Send push notification to mobile devices
+            // Determine notification content based on prompt
+            let (title, body) = if let Some(ref content) = prompt_content {
+                if content.contains("approval") || content.contains("permission") || content.contains("Allow") {
+                    ("Tool Approval Needed".to_string(), "Claude needs permission to proceed".to_string())
+                } else if content.contains("?") {
+                    ("Claude has a question".to_string(), content.chars().take(100).collect::<String>())
+                } else {
+                    ("Claude is ready".to_string(), "Waiting for your input".to_string())
+                }
+            } else {
+                ("Claude is ready".to_string(), "Waiting for your input".to_string())
+            };
+
+            let session_id_clone = session_id.clone();
+            tokio::spawn(async move {
+                send_push_notifications(&title, &body, &session_id_clone, "waiting_for_input").await;
+            });
         }
     });
 
@@ -1696,6 +1828,38 @@ async fn handle_client_message(
         ClientMessage::Ping => {
             // Respond immediately to heartbeat ping
             ServerMessage::Pong
+        }
+
+        ClientMessage::RegisterPushToken {
+            token,
+            token_type,
+            platform,
+        } => {
+            tracing::info!(
+                "Registering push token: type={}, platform={}, token={}...",
+                token_type,
+                platform,
+                &token[..token.len().min(20)]
+            );
+
+            // Store the token (replace existing token with same value to avoid duplicates)
+            {
+                let mut tokens = PUSH_TOKENS.write().await;
+                // Remove any existing token with the same value (device re-registration)
+                tokens.retain(|t| t.token != token);
+                tokens.push(PushToken {
+                    token: token.clone(),
+                    token_type: token_type.clone(),
+                    platform: platform.clone(),
+                    registered_at: std::time::Instant::now(),
+                });
+                tracing::info!("Push tokens stored: {} total", tokens.len());
+            }
+
+            ServerMessage::PushTokenRegistered {
+                token_type,
+                platform,
+            }
         }
     }
 }

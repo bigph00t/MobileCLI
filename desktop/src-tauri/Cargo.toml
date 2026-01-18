@@ -55,6 +55,9 @@ hex = "0.4"
 # File watching for JSONL real-time updates
 notify = "7"
 
+# HTTP client for push notifications (using rustls to avoid OpenSSL dependency)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # E2E Encryption (NaCl secretbox - XSalsa20-Poly1305)
 crypto_secretbox = "0.1"
 

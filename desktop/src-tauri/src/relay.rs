@@ -1038,6 +1038,38 @@ pub async fn start_relay(
                                                         }
                                                     }
                                                 }
+                                                ClientMessage::RegisterPushToken { token, token_type, platform } => {
+                                                    tracing::info!(
+                                                        "Registering push token via relay: type={}, platform={}, token={}...",
+                                                        token_type,
+                                                        platform,
+                                                        &token[..token.len().min(20)]
+                                                    );
+
+                                                    // Store the token using the same global storage as local WS
+                                                    {
+                                                        let mut tokens = crate::ws::PUSH_TOKENS.write().await;
+                                                        tokens.retain(|t| t.token != *token);
+                                                        tokens.push(crate::ws::PushToken {
+                                                            token: token.clone(),
+                                                            token_type: token_type.clone(),
+                                                            platform: platform.clone(),
+                                                            registered_at: std::time::Instant::now(),
+                                                        });
+                                                        tracing::info!("Push tokens stored: {} total", tokens.len());
+                                                    }
+
+                                                    // Send acknowledgment back to mobile
+                                                    let msg = ServerMessage::PushTokenRegistered {
+                                                        token_type: token_type.clone(),
+                                                        platform: platform.clone(),
+                                                    };
+                                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                                        if let Ok(encrypted) = encrypt_message(&key_response, &json) {
+                                                            let _ = tx_response.send(encrypted);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         } else {
                                             tracing::warn!("Failed to parse relay message as ClientMessage");
