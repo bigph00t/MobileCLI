@@ -304,6 +304,7 @@ impl JsonlWatcher {
                 "isStreaming": false, // JSONL entries are always complete
                 "timestamp": activity.timestamp,
                 "uuid": activity.uuid,
+                "summary": activity.summary,
                 "source": "jsonl", // Mark as coming from JSONL watcher
             }),
         );

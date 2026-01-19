@@ -451,6 +451,8 @@ pub enum ServerMessage {
         timestamp: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         prompt_content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wait_type: Option<String>,
     },
     /// Tool approval was accepted/rejected - dismiss mobile modal
     WaitingCleared {
@@ -646,17 +648,41 @@ pub async fn start_server(
             let timestamp = payload["timestamp"].as_str().unwrap_or("").to_string();
             let prompt_content = payload["promptContent"].as_str().map(|s| s.to_string());
 
+            let wait_type = payload["waitType"].as_str().map(|s| s.to_string());
             let msg = ServerMessage::WaitingForInput {
                 session_id: session_id.clone(),
                 timestamp,
                 prompt_content: prompt_content.clone(),
+                wait_type: wait_type.clone(),
             };
             tracing::debug!("Broadcasting waiting-for-input event with prompt content");
             let _ = broadcast_tx_clone3.send(msg);
 
             // Send push notification to mobile devices
             // Determine notification content based on prompt
-            let (title, body) = if let Some(ref content) = prompt_content {
+            let (title, body) = if let Some(ref wait_type) = wait_type {
+                match wait_type.as_str() {
+                    "tool_approval" => (
+                        "Tool Approval Needed".to_string(),
+                        "Claude needs permission to proceed".to_string(),
+                    ),
+                    "plan_approval" => (
+                        "Plan Approval Needed".to_string(),
+                        "Claude has a plan ready for review".to_string(),
+                    ),
+                    "clarifying_question" => (
+                        "Claude has a question".to_string(),
+                        prompt_content
+                            .as_ref()
+                            .map(|content| content.chars().take(100).collect::<String>())
+                            .unwrap_or_else(|| "Tap to respond".to_string()),
+                    ),
+                    _ => (
+                        "Claude is ready".to_string(),
+                        "Waiting for your input".to_string(),
+                    ),
+                }
+            } else if let Some(ref content) = prompt_content {
                 if content.contains("approval") || content.contains("permission") || content.contains("Allow") {
                     ("Tool Approval Needed".to_string(), "Claude needs permission to proceed".to_string())
                 } else if content.contains("?") {
@@ -1597,6 +1623,70 @@ async fn handle_client_message(
                     "sessionId": session_id,
                 }),
             );
+
+            // New: Send recent activities immediately so tool calls appear on mobile
+            let activities = if let Ok(Some(session)) = db.get_session(&session_id) {
+                let limit_val = 120;
+                if session.cli_type == "claude" {
+                    if let Some(ref conversation_id) = session.conversation_id {
+                        match jsonl::read_activities(&session.project_path, conversation_id) {
+                            Ok(acts) => {
+                                acts.into_iter()
+                                    .filter(|a| {
+                                        if a.activity_type == crate::parser::ActivityType::Thinking {
+                                            a.content.len() < 500
+                                        } else {
+                                            true
+                                        }
+                                    })
+                                    .take(limit_val)
+                                    .map(|a| ActivityInfo {
+                                        activity_type: match a.activity_type {
+                                            crate::parser::ActivityType::Thinking => "thinking",
+                                            crate::parser::ActivityType::ToolStart => "tool_start",
+                                            crate::parser::ActivityType::ToolResult => "tool_result",
+                                            crate::parser::ActivityType::FileRead => "file_read",
+                                            crate::parser::ActivityType::FileWrite => "file_write",
+                                            crate::parser::ActivityType::BashCommand => "bash_command",
+                                            crate::parser::ActivityType::CodeDiff => "code_diff",
+                                            crate::parser::ActivityType::Progress => "progress",
+                                            crate::parser::ActivityType::UserPrompt => "user_prompt",
+                                            crate::parser::ActivityType::Summary => "summary",
+                                            _ => "text",
+                                        }
+                                        .to_string(),
+                                        content: a.content,
+                                        tool_name: a.tool_name,
+                                        tool_params: a.tool_params,
+                                        file_path: a.file_path,
+                                        is_streaming: a.is_streaming,
+                                        timestamp: a.timestamp,
+                                        uuid: a.uuid,
+                                        summary: a.summary,
+                                    })
+                                    .collect::<Vec<_>>()
+                            }
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            if !activities.is_empty() {
+                let _ = app.emit(
+                    "activities",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "activities": activities,
+                    }),
+                );
+            }
 
             tracing::info!(
                 "Mobile subscribed to session {}, requesting current input and waiting state",

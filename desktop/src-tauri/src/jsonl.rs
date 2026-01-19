@@ -6,6 +6,7 @@
 //! This module reads these files to get clean, structured activities
 //! instead of parsing raw PTY output.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -186,6 +187,39 @@ pub struct JsonlEntry {
 // Activity Conversion
 // ============================================================================
 
+fn sanitize_plan_markup(content: &str) -> String {
+    let mut sanitized = content.to_string();
+    let xml_tag = Regex::new(r"</?command-[^>]+>").ok();
+    let local_tag = Regex::new(r"</?local-command-[^>]+>").ok();
+    if let Some(re) = xml_tag {
+        sanitized = re.replace_all(&sanitized, "").to_string();
+    }
+    if let Some(re) = local_tag {
+        sanitized = re.replace_all(&sanitized, "").to_string();
+    }
+    sanitized
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+
+fn sanitize_tool_result(content: &str) -> String {
+    let stripped = content.replace('\n', "").replace('\r', "").replace(' ', "");
+    if stripped.len() >= 200 {
+        let base64_chars = stripped
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
+            .count();
+        if base64_chars as f32 / stripped.len() as f32 >= 0.9 {
+            return "[binary output omitted]".to_string();
+        }
+    }
+    content.to_string()
+}
+
 /// Activity for mobile display (matches existing ActivityBlock structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -281,18 +315,18 @@ pub fn entry_to_activities_with_context(
                             } = block
                             {
                                 let result_content = match content {
-                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::String(s) => sanitize_tool_result(&s),
                                     serde_json::Value::Null => "(No output)".to_string(),
-                                    other => other.to_string(),
+                                    other => sanitize_tool_result(&other.to_string()),
                                 };
 
                                 // Also check toolUseResult for stdout/stderr
                                 let full_content =
                                     if let Some(ref tool_result) = entry.tool_use_result {
                                         if !tool_result.stdout.is_empty() {
-                                            tool_result.stdout.clone()
+                                            sanitize_tool_result(&tool_result.stdout)
                                         } else if !tool_result.stderr.is_empty() {
-                                            tool_result.stderr.clone()
+                                            sanitize_tool_result(&tool_result.stderr)
                                         } else {
                                             result_content
                                         }
@@ -332,11 +366,12 @@ pub fn entry_to_activities_with_context(
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text } => {
-                                if !text.trim().is_empty() {
+                                let sanitized = sanitize_plan_markup(text);
+                                if !sanitized.trim().is_empty() {
                                     activities.push(
                                         Activity::new(
                                             ActivityType::Text,
-                                            text.clone(),
+                                            sanitized,
                                             timestamp.clone(),
                                         )
                                         .with_uuid(uuid.clone()),
@@ -412,9 +447,10 @@ pub fn entry_to_activities_with_context(
         EntryType::Summary => {
             // ISSUE #11: Emit summary entries for clean tool descriptions in tool approval modal
             if let Some(summary_text) = &entry.summary {
-                if !summary_text.trim().is_empty() {
+                let sanitized = sanitize_plan_markup(summary_text);
+                if !sanitized.trim().is_empty() {
                     activities.push(
-                        Activity::new(ActivityType::Summary, summary_text.clone(), timestamp)
+                        Activity::new(ActivityType::Summary, sanitized, timestamp)
                             .with_uuid(uuid),
                     );
                 }

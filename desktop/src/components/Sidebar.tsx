@@ -532,13 +532,17 @@ function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCo
   // Determine display state based on waiting state, input state, and session status
   // Priority: history > tool_approval > user_typing > awaiting_response > working > completed
   // ISSUE #5: user_typing beats awaiting_response - "Prevent 'awaiting response' from appearing during typing"
-  let displayState: 'user_typing' | 'working' | 'awaiting_approval' | 'awaiting_response' | 'completed' | 'history' = 'completed';
+  let displayState: 'user_typing' | 'working' | 'awaiting_approval' | 'awaiting_response' | 'completed' | 'history' | 'clarifying' | 'plan_approval' = 'completed';
 
   if (isHistory || session.status === 'closed') {
     displayState = 'history';
   } else if (waitingState?.waitType === 'tool_approval') {
     // Tool approval always takes priority - user must respond
     displayState = 'awaiting_approval';
+  } else if (waitingState?.waitType === 'plan_approval') {
+    displayState = 'plan_approval';
+  } else if (waitingState?.waitType === 'clarifying_question') {
+    displayState = 'clarifying';
   } else if (isUserTyping) {
     // ISSUE #5: User is typing - show "User typing" instead of "working" or "awaiting response"
     displayState = 'user_typing';
@@ -561,6 +565,8 @@ function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCo
     working: { color: 'bg-[#9ece6a]', text: `${cliName} working...` },
     awaiting_approval: { color: 'bg-[#e0af68]', text: 'Awaiting approval' },
     awaiting_response: { color: 'bg-[#e0af68]', text: 'Awaiting response' },
+    plan_approval: { color: 'bg-[#e0af68]', text: 'Plan approval' },
+    clarifying: { color: 'bg-[#e0af68]', text: 'Question pending' },
     completed: { color: 'bg-[#565f89]', text: 'Completed' },
     history: { color: '', text: '' }, // No dot for history
   };

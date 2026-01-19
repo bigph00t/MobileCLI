@@ -1,5 +1,6 @@
 // Claude History Reader - Reads conversation history from Claude's JSONL files
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -11,6 +12,38 @@ pub struct ConversationMessage {
     pub role: String,
     pub content: String,
     pub timestamp: Option<String>,
+}
+
+fn sanitize_plan_markup(content: &str) -> String {
+    let mut sanitized = content.to_string();
+    let xml_tag = Regex::new(r"</?command-[^>]+>").ok();
+    let local_tag = Regex::new(r"</?local-command-[^>]+>").ok();
+    if let Some(re) = xml_tag {
+        sanitized = re.replace_all(&sanitized, "").to_string();
+    }
+    if let Some(re) = local_tag {
+        sanitized = re.replace_all(&sanitized, "").to_string();
+    }
+    sanitized
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn sanitize_tool_result(content: &str) -> String {
+    let stripped = content.replace('\n', "").replace('\r', "").replace(' ', "");
+    if stripped.len() >= 200 {
+        let base64_chars = stripped
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
+            .count();
+        if base64_chars as f32 / stripped.len() as f32 >= 0.9 {
+            return "[binary output omitted]".to_string();
+        }
+    }
+    content.to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,25 +140,26 @@ pub fn read_conversation_history(
                 for block in content_blocks {
                     match block {
                         ContentBlock::Text { text } => {
-                            text_parts.push(text.clone());
+                            text_parts.push(sanitize_plan_markup(text));
                         }
                         ContentBlock::ToolUse { name } => {
-                            text_parts.push(format!("[Using tool: {}]", name));
+                            text_parts.push(format!("[Using tool: {}]", sanitize_plan_markup(name)));
                         }
                         ContentBlock::ToolResult { content } => {
                             if let Some(c) = content {
-                                // Truncate long tool results
-                                let truncated = if c.len() > 200 {
-                                    format!("{}...", &c[..200])
+                                let sanitized = sanitize_tool_result(c);
+                                let truncated = if sanitized.len() > 200 {
+                                    format!("{}...", &sanitized[..200])
                                 } else {
-                                    c.clone()
+                                    sanitized
                                 };
-                                text_parts.push(format!("[Tool result: {}]", truncated));
+                                text_parts.push(format!("[Tool result: {}]", sanitize_plan_markup(&truncated)));
                             }
                         }
                         ContentBlock::Other(_) => {}
                     }
                 }
+                text_parts.retain(|part| !part.trim().is_empty());
                 text_parts.join("\n")
             } else {
                 String::new()
@@ -135,6 +169,11 @@ pub fn read_conversation_history(
         };
 
         // Skip empty messages
+        if content.is_empty() {
+            continue;
+        }
+
+        let content = sanitize_plan_markup(&content);
         if content.is_empty() {
             continue;
         }

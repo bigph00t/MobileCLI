@@ -585,6 +585,46 @@ impl SessionManager {
                                 recent_context.clone()
                             };
 
+                            let prompt_lower = prompt_content.to_lowercase();
+                            let wait_type = if is_trust_prompt(&prompt_content) {
+                                Some("trust_prompt".to_string())
+                            } else if prompt_lower.contains("exitplanmode")
+                                || prompt_lower.contains("plan mode")
+                                || prompt_lower.contains("approve this plan")
+                                || prompt_lower.contains("plan is complete")
+                                || prompt_lower.contains("ready to implement")
+                                || prompt_lower.contains("ready to code")
+                            {
+                                Some("plan_approval".to_string())
+                            } else if prompt_lower.contains("which would you prefer")
+                                || prompt_lower.contains("which option")
+                                || prompt_lower.contains("what approach")
+                                || prompt_lower.contains("what would you prefer")
+                                || prompt_lower.contains("please select")
+                                || prompt_lower.contains("askuserquestion")
+                            {
+                                Some("clarifying_question".to_string())
+                            } else {
+                                let tool_approval_patterns = [
+                                    "do you want to proceed",
+                                    "do you want to continue",
+                                    "allow this",
+                                    "1. yes",
+                                    "2. yes",
+                                    "3. no",
+                                    "allow once",
+                                    "allow always",
+                                    "yes, and don't ask again",
+                                    "type here to tell claude",
+                                    "tab to add additional",
+                                ];
+                                if tool_approval_patterns.iter().any(|p| prompt_lower.contains(p)) {
+                                    Some("tool_approval".to_string())
+                                } else {
+                                    Some("awaiting_response".to_string())
+                                }
+                            };
+
                             // AUTO-ACCEPT TRUST PROMPTS: Check if this is a trust prompt
                             // and auto-accept it by sending Enter key
                             let mut trust_prompt_handled = false;
@@ -622,6 +662,7 @@ impl SessionManager {
                                         "sessionId": session_id_clone,
                                         "timestamp": chrono::Utc::now().to_rfc3339(),
                                         "promptContent": prompt_content,
+                                        "waitType": wait_type,
                                     }),
                                 );
                             }
@@ -1298,6 +1339,46 @@ impl SessionManager {
                                 recent_context.clone()
                             };
 
+                            let prompt_lower = prompt_content.to_lowercase();
+                            let wait_type = if is_trust_prompt(&prompt_content) {
+                                Some("trust_prompt".to_string())
+                            } else if prompt_lower.contains("exitplanmode")
+                                || prompt_lower.contains("plan mode")
+                                || prompt_lower.contains("approve this plan")
+                                || prompt_lower.contains("plan is complete")
+                                || prompt_lower.contains("ready to implement")
+                                || prompt_lower.contains("ready to code")
+                            {
+                                Some("plan_approval".to_string())
+                            } else if prompt_lower.contains("which would you prefer")
+                                || prompt_lower.contains("which option")
+                                || prompt_lower.contains("what approach")
+                                || prompt_lower.contains("what would you prefer")
+                                || prompt_lower.contains("please select")
+                                || prompt_lower.contains("askuserquestion")
+                            {
+                                Some("clarifying_question".to_string())
+                            } else {
+                                let tool_approval_patterns = [
+                                    "do you want to proceed",
+                                    "do you want to continue",
+                                    "allow this",
+                                    "1. yes",
+                                    "2. yes",
+                                    "3. no",
+                                    "allow once",
+                                    "allow always",
+                                    "yes, and don't ask again",
+                                    "type here to tell claude",
+                                    "tab to add additional",
+                                ];
+                                if tool_approval_patterns.iter().any(|p| prompt_lower.contains(p)) {
+                                    Some("tool_approval".to_string())
+                                } else {
+                                    Some("awaiting_response".to_string())
+                                }
+                            };
+
                             // AUTO-ACCEPT TRUST PROMPTS: Check if this is a trust prompt
                             // and auto-accept it by sending Enter key
                             if is_trust_prompt(&prompt_content) {
@@ -1331,6 +1412,7 @@ impl SessionManager {
                                     "sessionId": session_id_clone,
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                     "promptContent": prompt_content,
+                                    "waitType": wait_type,
                                 }),
                             );
                         }

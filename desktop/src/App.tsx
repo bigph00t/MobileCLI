@@ -134,9 +134,10 @@ function App() {
       sessionId: string;
       timestamp: string;
       promptContent?: string;
+      waitType?: 'tool_approval' | 'plan_approval' | 'clarifying_question' | 'awaiting_response';
     }>('waiting-for-input', (event) => {
-      const { sessionId, timestamp, promptContent } = event.payload;
-      // Detect if this is a tool approval based on prompt content
+      const { sessionId, timestamp, promptContent, waitType } = event.payload;
+      // Detect if this is a tool approval based on prompt content (fallback if waitType missing)
       const isToolApproval = promptContent?.includes('Do you want to') ||
         promptContent?.includes('Allow') ||
         promptContent?.includes('approve') ||
@@ -145,7 +146,7 @@ function App() {
 
       useSessionStore.getState().setWaitingState(sessionId, {
         sessionId,
-        waitType: isToolApproval ? 'tool_approval' : 'awaiting_response',
+        waitType: waitType || (isToolApproval ? 'tool_approval' : 'awaiting_response'),
         promptContent,
         timestamp,
       });
@@ -214,6 +215,7 @@ function App() {
           sessionId,
           timestamp: waitingState.timestamp,
           promptContent: waitingState.promptContent || '',
+          waitType: waitingState.waitType,
         });
         console.log('[App] Sent waiting-for-input to mobile for session', sessionId);
       } else {

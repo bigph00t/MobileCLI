@@ -461,6 +461,7 @@ pub async fn start_relay(
                 session_id: payload["sessionId"].as_str().unwrap_or("").to_string(),
                 timestamp: payload["timestamp"].as_str().unwrap_or("").to_string(),
                 prompt_content: payload["promptContent"].as_str().map(String::from),
+                wait_type: payload["waitType"].as_str().map(String::from),
             };
             if let Ok(json) = serde_json::to_string(&msg) {
                 if let Ok(encrypted) = encrypt_message(&key_wait, &json) {

@@ -32,7 +32,7 @@ export interface Message {
 
 export interface WaitingState {
   sessionId: string;
-  waitType: 'tool_approval' | 'awaiting_response' | null;
+  waitType: 'tool_approval' | 'plan_approval' | 'clarifying_question' | 'awaiting_response' | null;
   promptContent?: string;
   timestamp: string;
 }
