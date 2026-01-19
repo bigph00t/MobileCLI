@@ -268,11 +268,6 @@ impl Activity {
         self
     }
 
-    /// ISSUE #11: Attach a clean summary to this activity
-    fn with_summary(mut self, summary: String) -> Self {
-        self.summary = Some(summary);
-        self
-    }
 }
 
 /// Convert a JSONL entry into activities for display

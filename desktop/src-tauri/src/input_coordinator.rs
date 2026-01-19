@@ -130,14 +130,6 @@ impl InputCoordinator {
     }
 }
 
-/// Represents the current input state for broadcasting to clients
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct InputState {
-    pub session_id: String,
-    pub typing: bool,
-    pub sender_id: String,
-    pub sender_name: Option<String>,
-}
 
 #[cfg(test)]
 mod tests {

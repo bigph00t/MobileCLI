@@ -185,17 +185,6 @@ pub struct ResponseItemPayload {
 }
 
 /// Session metadata payload
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionMetaPayload {
-    pub id: Option<String>,
-    pub timestamp: Option<String>,
-    pub cwd: Option<String>,
-    pub originator: Option<String>,
-    pub cli_version: Option<String>,
-    pub instructions: Option<String>,
-    pub source: Option<String>,
-    pub model_provider: Option<String>,
-}
 
 /// A single Codex JSONL record
 #[derive(Debug, Clone, Serialize, Deserialize)]

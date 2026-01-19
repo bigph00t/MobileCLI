@@ -409,7 +409,7 @@ mod commands {
         // Send to PTY as raw input
         let manager = state.session_manager.read().await;
         manager
-            .send_raw_input(&session_id, input.clone())
+            .send_raw_input(&session_id, input)
             .await
             .map_err(|e| e.to_string())?;
 
