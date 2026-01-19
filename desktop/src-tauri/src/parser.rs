@@ -40,6 +40,9 @@ pub enum ActivityType {
     CodeDiff,
     /// Progress/status update
     Progress,
+    /// Tool summary - clean description of tool intent
+    /// ISSUE #11: Used for structured tool summaries in tool approval modal
+    Summary,
 }
 
 // NOTE: ActivityBlock was removed in JSONL redesign Phase 6.

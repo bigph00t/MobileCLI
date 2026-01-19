@@ -341,6 +341,8 @@ pub enum ClientMessage {
     },
     ResumeSession {
         session_id: String,
+        /// Optional: skip permission prompts on resume (mobile setting)
+        claude_skip_permissions: Option<bool>,
     },
     GetSessions,
     GetMessages {
@@ -560,6 +562,9 @@ pub struct ActivityInfo {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    /// ISSUE #11: Clean tool summary for display in tool approval modal
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 pub async fn start_server(
@@ -1162,6 +1167,7 @@ async fn handle_client_message(
                                             is_streaming: a.is_streaming,
                                             timestamp: a.timestamp,
                                             uuid: a.uuid,
+                                            summary: None, // Codex doesn't have summary entries
                                         })
                                         .collect();
                                     let messages = convert_activities(activities, &session_id);
@@ -1201,6 +1207,7 @@ async fn handle_client_message(
                                             is_streaming: a.is_streaming,
                                             timestamp: a.timestamp,
                                             uuid: a.uuid,
+                                            summary: None, // Gemini doesn't have summary entries
                                         })
                                         .collect();
                                     let messages = convert_activities(activities, &session_id);
@@ -1296,6 +1303,7 @@ async fn handle_client_message(
                                             }
                                             crate::parser::ActivityType::CodeDiff => "code_diff",
                                             crate::parser::ActivityType::Progress => "progress",
+                                            crate::parser::ActivityType::Summary => "summary",
                                         };
                                         ActivityInfo {
                                             activity_type: activity_type_str.to_string(),
@@ -1306,6 +1314,7 @@ async fn handle_client_message(
                                             is_streaming: a.is_streaming,
                                             timestamp: a.timestamp,
                                             uuid: a.uuid,
+                                            summary: a.summary, // ISSUE #11
                                         }
                                     })
                                     .collect();
@@ -1484,7 +1493,7 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::ResumeSession { session_id } => {
+        ClientMessage::ResumeSession { session_id, claude_skip_permissions } => {
             // Get session from database to check if it can be resumed
             match db.get_session(&session_id) {
                 Ok(Some(session)) => {
@@ -1518,6 +1527,7 @@ async fn handle_client_message(
                     }
 
                     // Emit event to start PTY with resume flag
+                    // ISSUE #2: Include claude_skip_permissions from mobile
                     let _ = app.emit(
                         "resume-session",
                         serde_json::json!({
@@ -1525,6 +1535,7 @@ async fn handle_client_message(
                             "projectPath": session.project_path,
                             "conversationId": session.conversation_id,
                             "cliType": session.cli_type,
+                            "claudeSkipPermissions": claude_skip_permissions,
                         }),
                     );
 

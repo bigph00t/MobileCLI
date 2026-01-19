@@ -492,6 +492,38 @@ mod commands {
         Ok(())
     }
 
+    /// ISSUE #1: Create a new directory at the specified path
+    /// Used by the desktop frontend to create folders during new session setup
+    #[tauri::command]
+    pub async fn create_directory(path: String) -> Result<(), String> {
+        use std::path::Path;
+
+        let dir_path = Path::new(&path);
+
+        // Validate: path must be absolute
+        if !dir_path.is_absolute() {
+            return Err("Path must be absolute".to_string());
+        }
+
+        // Validate: parent must exist
+        if let Some(parent) = dir_path.parent() {
+            if !parent.exists() {
+                return Err(format!("Parent directory does not exist: {}", parent.display()));
+            }
+        }
+
+        // Validate: path must not already exist
+        if dir_path.exists() {
+            return Err(format!("Directory already exists: {}", path));
+        }
+
+        // Create the directory
+        std::fs::create_dir(&path).map_err(|e| format!("Failed to create directory: {}", e))?;
+
+        tracing::info!("Created directory: {}", path);
+        Ok(())
+    }
+
     /// Get messages/activities for a session
     ///
     /// For Claude sessions, reads from Claude's JSONL logs for clean, structured data.
@@ -578,6 +610,7 @@ mod commands {
                     is_streaming: false,
                     timestamp: m.timestamp,
                     uuid: None,
+                    summary: None,
                 }
             })
             .collect();
@@ -685,6 +718,7 @@ mod commands {
             .map_err(|e| e.to_string())?;
 
         // Start PTY process with resume flag
+        // Desktop resume uses config setting (None means use config default)
         let mut manager = state.session_manager.write().await;
         manager
             .resume_session(
@@ -694,6 +728,7 @@ mod commands {
                 cli_type,
                 state.db.clone(),
                 app,
+                None, // Use config default for desktop resume
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1363,6 +1398,8 @@ pub fn run() {
                     let project_path = payload["projectPath"].as_str().unwrap_or("").to_string();
                     let conversation_id = payload["conversationId"].as_str().unwrap_or("").to_string();
                     let cli_type_str = payload["cliType"].as_str().unwrap_or("claude");
+                    // ISSUE #2: Extract claude_skip_permissions from mobile
+                    let claude_skip_permissions = payload["claudeSkipPermissions"].as_bool();
 
                     let cli_type = db::CliType::from_str(cli_type_str).unwrap_or(db::CliType::ClaudeCode);
 
@@ -1379,6 +1416,7 @@ pub fn run() {
                                 cli_type,
                                 db,
                                 app,
+                                claude_skip_permissions,
                             ).await {
                                 tracing::error!("Failed to resume session {}: {}", session_id, e);
                             }
@@ -1495,6 +1533,8 @@ pub fn run() {
             app.listen("relay-resume-session", move |event| {
                 if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
                     let session_id = payload["sessionId"].as_str().unwrap_or("").to_string();
+                    // ISSUE #2: Extract claude_skip_permissions from relay event
+                    let claude_skip_permissions = payload["claudeSkipPermissions"].as_bool();
 
                     if !session_id.is_empty() {
                         let manager = session_manager_for_relay_resume.clone();
@@ -1512,6 +1552,7 @@ pub fn run() {
                                         let _ = db.update_session_status(&session_id, "active");
 
                                         // Resume PTY
+                                        // ISSUE #2: Use claude_skip_permissions from relay if provided
                                         let mut mgr = manager.write().await;
                                         if let Err(e) = mgr.resume_session(
                                             session_id.clone(),
@@ -1520,6 +1561,7 @@ pub fn run() {
                                             cli_type,
                                             db,
                                             app.clone(),
+                                            claude_skip_permissions,
                                         ).await {
                                             tracing::error!("Failed to resume relay session {}: {}", session_id, e);
                                         } else {
@@ -1567,6 +1609,7 @@ pub fn run() {
             commands::resize_pty,
             commands::close_session,
             commands::delete_session,
+            commands::create_directory,
             commands::get_messages,
             commands::get_ws_port,
             commands::is_ws_ready,

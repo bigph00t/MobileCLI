@@ -37,11 +37,19 @@ export interface WaitingState {
   timestamp: string;
 }
 
+// ISSUE #5: Track input state for "User typing" indicator
+export interface InputState {
+  text: string;
+  cursorPosition: number;
+  timestamp: number;
+}
+
 interface SessionState {
   sessions: Session[];
   activeSessionId: string | null;
   messages: Record<string, Message[]>; // sessionId -> messages
   waitingStates: Record<string, WaitingState>; // sessionId -> waiting state
+  inputStates: Record<string, InputState>; // ISSUE #5: sessionId -> input state for typing indicator
   availableClis: CliInfo[];
   isLoading: boolean;
   error: string | null;
@@ -59,6 +67,7 @@ interface SessionState {
   updateMessage: (messageId: string, content: string) => void;
   sendInput: (sessionId: string, input: string) => Promise<void>;
   setWaitingState: (sessionId: string, state: WaitingState | null) => void;
+  setInputState: (sessionId: string, state: InputState | null) => void; // ISSUE #5
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -66,6 +75,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeSessionId: null,
   messages: {},
   waitingStates: {},
+  inputStates: {}, // ISSUE #5: Track input states for typing indicator
   availableClis: [],
   isLoading: false,
   error: null,
@@ -248,6 +258,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return {
         waitingStates: { ...current.waitingStates, [sessionId]: state },
+      };
+    });
+  },
+
+  // ISSUE #5: Track input state for "User typing" indicator
+  setInputState: (sessionId, state) => {
+    set((current) => {
+      if (state === null) {
+        const { [sessionId]: _, ...rest } = current.inputStates;
+        return { inputStates: rest };
+      }
+      return {
+        inputStates: { ...current.inputStates, [sessionId]: state },
       };
     });
   },

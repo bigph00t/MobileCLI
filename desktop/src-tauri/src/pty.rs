@@ -1057,6 +1057,7 @@ impl SessionManager {
     }
 
     /// Resume a session with an existing conversation ID
+    /// ISSUE #2: Added claude_skip_permissions parameter for mobile-provided setting
     pub async fn resume_session(
         &mut self,
         session_id: String,
@@ -1065,6 +1066,7 @@ impl SessionManager {
         cli_type: CliType,
         _db: Arc<Database>, // Unused after JSONL redesign - JSONL watcher handles storage
         app: AppHandle,
+        claude_skip_permissions: Option<bool>,
     ) -> Result<(), PtyError> {
         let pty_system = native_pty_system();
 
@@ -1089,8 +1091,9 @@ impl SessionManager {
                 let mut cmd = CommandBuilder::new(&claude_path);
                 cmd.arg("--resume");
                 cmd.arg(&conversation_id);
-                // Add --dangerously-skip-permissions if enabled in config
-                if app_config.claude_skip_permissions {
+                // ISSUE #2: Use passed setting if provided, otherwise fall back to config
+                let use_skip_permissions = claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
+                if use_skip_permissions {
                     cmd.arg("--dangerously-skip-permissions");
                     tracing::info!("Claude resume starting with --dangerously-skip-permissions");
                 }

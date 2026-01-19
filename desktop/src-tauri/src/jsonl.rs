@@ -203,6 +203,9 @@ pub struct Activity {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    /// ISSUE #11: Clean tool summary text for display in tool approval modal
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Activity {
@@ -216,6 +219,7 @@ impl Activity {
             is_streaming: false,
             timestamp,
             uuid: None,
+            summary: None,
         }
     }
 
@@ -227,6 +231,12 @@ impl Activity {
     fn with_tool(mut self, name: String, params: Option<String>) -> Self {
         self.tool_name = Some(name);
         self.tool_params = params;
+        self
+    }
+
+    /// ISSUE #11: Attach a clean summary to this activity
+    fn with_summary(mut self, summary: String) -> Self {
+        self.summary = Some(summary);
         self
     }
 }
@@ -395,8 +405,20 @@ pub fn entry_to_activities_with_context(
             // These are internal to Claude and not useful for display
         }
 
-        EntryType::FileHistorySnapshot | EntryType::Summary => {
-            // Skip file history and summary entries
+        EntryType::FileHistorySnapshot => {
+            // Skip file history entries - not useful for display
+        }
+
+        EntryType::Summary => {
+            // ISSUE #11: Emit summary entries for clean tool descriptions in tool approval modal
+            if let Some(summary_text) = &entry.summary {
+                if !summary_text.trim().is_empty() {
+                    activities.push(
+                        Activity::new(ActivityType::Summary, summary_text.clone(), timestamp)
+                            .with_uuid(uuid),
+                    );
+                }
+            }
         }
     }
 

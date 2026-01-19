@@ -175,6 +175,27 @@ function App() {
       }
     });
 
+    // ISSUE #5: Listen for input-state events (from Terminal.tsx or mobile via WS)
+    // This tracks when user is typing to show "User typing" instead of "Claude working"
+    const unlistenInputState = listen<{
+      sessionId: string;
+      text: string;
+      cursorPosition: number;
+      timestamp: number;
+    }>('input-state', (event) => {
+      const { sessionId, text, cursorPosition, timestamp } = event.payload;
+      if (text && text.length > 0) {
+        useSessionStore.getState().setInputState(sessionId, {
+          text,
+          cursorPosition,
+          timestamp,
+        });
+      } else {
+        // Clear input state when text is empty
+        useSessionStore.getState().setInputState(sessionId, null);
+      }
+    });
+
     // FIX FOR ISSUE 1 & 6: Listen for waiting state requests from mobile
     // When mobile subscribes to a session, send the current waiting state
     const unlistenRequestWaitingState = listen<{
@@ -215,6 +236,7 @@ function App() {
       unlistenWaitingForInput.then((fn) => fn());
       unlistenWaitingCleared.then((fn) => fn());
       unlistenMessage.then((fn) => fn());
+      unlistenInputState.then((fn) => fn()); // ISSUE #5
       unlistenRequestWaitingState.then((fn) => fn());
     };
   }, []);

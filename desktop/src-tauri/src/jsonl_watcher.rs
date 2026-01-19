@@ -282,6 +282,7 @@ impl JsonlWatcher {
             crate::parser::ActivityType::BashCommand => "bash_command",
             crate::parser::ActivityType::CodeDiff => "code_diff",
             crate::parser::ActivityType::Progress => "progress",
+            crate::parser::ActivityType::Summary => "summary",
         };
 
         tracing::debug!(

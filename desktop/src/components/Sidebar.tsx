@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { clsx } from 'clsx';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Session, WaitingState, useSessionStore } from '../hooks/useSession';
+import { invoke } from '@tauri-apps/api/core';
+import { Session, WaitingState, InputState, useSessionStore } from '../hooks/useSession';
 
 // CLI icons/badges
 const CLI_BADGES: Record<string, { label: string; color: string }> = {
@@ -43,11 +44,17 @@ export default function Sidebar({
   onOpenAbout,
   onOpenHelp,
 }: SidebarProps) {
-  const { createSession, resumeSession, closeSession, deleteSession, fetchAvailableClis, availableClis, waitingStates } = useSessionStore();
+  const { createSession, resumeSession, closeSession, deleteSession, fetchAvailableClis, availableClis, waitingStates, inputStates } = useSessionStore();
   const [isCreating, setIsCreating] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  // ISSUE #1: Create folder modal state
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [parentPath, setParentPath] = useState('');
+  const [newFolderName, setNewFolderName] = useState('');
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -108,6 +115,69 @@ export default function Sidebar({
   useEffect(() => {
     fetchAvailableClis();
   }, [fetchAvailableClis]);
+
+  // ISSUE #1: Browse for parent folder
+  const handleBrowseParent = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Parent Folder',
+      });
+      if (selected) {
+        setParentPath(selected as string);
+        setCreateError(null);
+      }
+    } catch (e) {
+      console.error('Failed to select parent folder:', e);
+    }
+  };
+
+  // ISSUE #1: Create new folder and start session
+  const handleCreateFolderAndSession = async () => {
+    if (!parentPath || !newFolderName.trim()) return;
+
+    // Validate folder name
+    const name = newFolderName.trim();
+    if (/[/\\:*?"<>|]/.test(name)) {
+      setCreateError('Folder name contains invalid characters');
+      return;
+    }
+
+    setIsCreatingFolder(true);
+    setCreateError(null);
+
+    try {
+      // Build full path
+      const fullPath = parentPath.endsWith('/') || parentPath.endsWith('\\')
+        ? `${parentPath}${name}`
+        : `${parentPath}/${name}`;
+
+      // Create the directory
+      await invoke('create_directory', { path: fullPath });
+
+      // Close modal
+      setShowCreateFolderModal(false);
+      setParentPath('');
+      setNewFolderName('');
+
+      // Create session in the new folder
+      setIsCreating(true);
+      const installedClis = availableClis.filter(cli => cli.installed);
+      const savedDefault = localStorage.getItem('defaultCli');
+      const cliType = installedClis.find(c => c.id === savedDefault)?.id
+        || installedClis[0]?.id
+        || 'claude';
+
+      await createSession(fullPath, undefined, cliType);
+    } catch (e) {
+      console.error('Failed to create folder:', e);
+      setCreateError(String(e));
+    } finally {
+      setIsCreatingFolder(false);
+      setIsCreating(false);
+    }
+  };
 
   const handleNewSession = async () => {
     console.log('New Session button clicked');
@@ -175,23 +245,47 @@ export default function Sidebar({
 
       {/* New Session */}
       <div className="p-3 border-b border-[#414868]/50">
-        <button
-          onClick={handleNewSession}
-          disabled={isCreating}
-          className={`${isCollapsed ? 'w-8 h-8 p-0' : 'w-full'} bg-[#7aa2f7] hover:bg-[#89b4fa] text-[#1a1b26] font-medium rounded-lg text-sm disabled:opacity-50 flex items-center justify-center gap-2 py-2 px-4 transition-colors`}
-          title="New Session"
-        >
-          {isCreating ? (
-            <span className="animate-spin">⏳</span>
-          ) : isCollapsed ? (
-            <span className="text-lg">+</span>
-          ) : (
-            <>
-              <span>+</span>
-              New Session
-            </>
-          )}
-        </button>
+        <div className={`${isCollapsed ? '' : 'flex gap-2'}`}>
+          <button
+            onClick={handleNewSession}
+            disabled={isCreating}
+            className={`${isCollapsed ? 'w-8 h-8 p-0 mb-2' : 'flex-1'} bg-[#7aa2f7] hover:bg-[#89b4fa] text-[#1a1b26] font-medium rounded-lg text-sm disabled:opacity-50 flex items-center justify-center gap-2 py-2 px-3 transition-colors`}
+            title="Select existing folder"
+          >
+            {isCreating ? (
+              <span className="animate-spin">⏳</span>
+            ) : isCollapsed ? (
+              <span className="text-lg">+</span>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                Open
+              </>
+            )}
+          </button>
+          {/* ISSUE #1: Create new folder button */}
+          <button
+            onClick={() => setShowCreateFolderModal(true)}
+            disabled={isCreating}
+            className={`${isCollapsed ? 'w-8 h-8 p-0' : ''} bg-[#9ece6a] hover:bg-[#a9d974] text-[#1a1b26] font-medium rounded-lg text-sm disabled:opacity-50 flex items-center justify-center gap-2 py-2 px-3 transition-colors`}
+            title="Create new folder"
+          >
+            {isCollapsed ? (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+              </svg>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                </svg>
+                New
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Session List */}
@@ -213,6 +307,7 @@ export default function Sidebar({
                 onContextMenu={handleContextMenu}
                 isCollapsed={isCollapsed}
                 waitingState={waitingStates[session.id]}
+                inputState={inputStates[session.id]} // ISSUE #5: Pass input state for typing indicator
                 isHistory={false}
               />
             ))}
@@ -324,6 +419,94 @@ export default function Sidebar({
           )}
         </div>
       )}
+
+      {/* ISSUE #1: Create Folder Modal */}
+      {showCreateFolderModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-[#1a1b26] border border-[#414868] rounded-lg p-6 w-96 shadow-xl">
+            <h2 className="text-lg font-semibold text-[#c0caf5] mb-4">Create New Folder</h2>
+
+            {/* Parent folder selection */}
+            <div className="mb-4">
+              <label className="block text-sm text-[#a9b1d6] mb-2">Parent Folder</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={parentPath}
+                  onChange={(e) => setParentPath(e.target.value)}
+                  placeholder="Select or enter parent path..."
+                  className="flex-1 bg-[#24283b] border border-[#414868] rounded px-3 py-2 text-sm text-[#c0caf5] placeholder-[#565f89] focus:outline-none focus:border-[#7aa2f7]"
+                />
+                <button
+                  onClick={handleBrowseParent}
+                  className="px-3 py-2 bg-[#414868] hover:bg-[#565f89] text-[#c0caf5] rounded text-sm transition-colors"
+                >
+                  Browse
+                </button>
+              </div>
+            </div>
+
+            {/* New folder name */}
+            <div className="mb-4">
+              <label className="block text-sm text-[#a9b1d6] mb-2">Folder Name</label>
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={(e) => {
+                  setNewFolderName(e.target.value);
+                  setCreateError(null);
+                }}
+                placeholder="my-new-project"
+                className="w-full bg-[#24283b] border border-[#414868] rounded px-3 py-2 text-sm text-[#c0caf5] placeholder-[#565f89] focus:outline-none focus:border-[#7aa2f7]"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && parentPath && newFolderName.trim()) {
+                    handleCreateFolderAndSession();
+                  }
+                }}
+                autoFocus
+              />
+            </div>
+
+            {/* Error message */}
+            {createError && (
+              <div className="mb-4 p-2 bg-[#f7768e]/20 border border-[#f7768e]/50 rounded text-sm text-[#f7768e]">
+                {createError}
+              </div>
+            )}
+
+            {/* Preview path */}
+            {parentPath && newFolderName && (
+              <div className="mb-4 p-2 bg-[#24283b] rounded text-xs text-[#565f89] font-mono truncate">
+                {parentPath.endsWith('/') || parentPath.endsWith('\\')
+                  ? `${parentPath}${newFolderName.trim()}`
+                  : `${parentPath}/${newFolderName.trim()}`}
+              </div>
+            )}
+
+            {/* Buttons */}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowCreateFolderModal(false);
+                  setParentPath('');
+                  setNewFolderName('');
+                  setCreateError(null);
+                }}
+                className="px-4 py-2 text-sm text-[#a9b1d6] hover:text-[#c0caf5] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateFolderAndSession}
+                disabled={!parentPath || !newFolderName.trim() || isCreatingFolder}
+                className="px-4 py-2 bg-[#9ece6a] hover:bg-[#a9d974] text-[#1a1b26] font-medium rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isCreatingFolder ? 'Creating...' : 'Create & Start Session'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -336,24 +519,33 @@ interface SessionItemProps {
   onContextMenu?: (e: React.MouseEvent, session: Session) => void;
   isCollapsed?: boolean;
   waitingState?: WaitingState;
+  inputState?: InputState; // ISSUE #5: For "User typing" indicator
   isHistory?: boolean;
 }
 
-function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCollapsed, waitingState, isHistory }: SessionItemProps) {
+function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCollapsed, waitingState, inputState, isHistory }: SessionItemProps) {
   const [isResuming, setIsResuming] = useState(false);
 
-  // Determine display state based on waiting state and session status
-  // Priority: tool_approval > awaiting_response > working > completed
-  let displayState: 'working' | 'awaiting_approval' | 'awaiting_response' | 'completed' | 'history' = 'completed';
+  // ISSUE #5: Check if user is typing (input buffer has content)
+  const isUserTyping = inputState && inputState.text && inputState.text.length > 0;
+
+  // Determine display state based on waiting state, input state, and session status
+  // Priority: history > tool_approval > user_typing > awaiting_response > working > completed
+  // ISSUE #5: user_typing beats awaiting_response - "Prevent 'awaiting response' from appearing during typing"
+  let displayState: 'user_typing' | 'working' | 'awaiting_approval' | 'awaiting_response' | 'completed' | 'history' = 'completed';
 
   if (isHistory || session.status === 'closed') {
     displayState = 'history';
   } else if (waitingState?.waitType === 'tool_approval') {
+    // Tool approval always takes priority - user must respond
     displayState = 'awaiting_approval';
+  } else if (isUserTyping) {
+    // ISSUE #5: User is typing - show "User typing" instead of "working" or "awaiting response"
+    displayState = 'user_typing';
   } else if (waitingState?.waitType === 'awaiting_response') {
     displayState = 'awaiting_response';
   } else if (session.status === 'active') {
-    // Active with no waiting state = Claude is working
+    // Active with no waiting state and not typing = Claude is working
     displayState = 'working';
   } else {
     // idle status = completed/paused
@@ -365,6 +557,7 @@ function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCo
 
   // Status colors and text
   const statusConfig = {
+    user_typing: { color: 'bg-[#7aa2f7]', text: 'User typing...' }, // ISSUE #5: Blue for user typing
     working: { color: 'bg-[#9ece6a]', text: `${cliName} working...` },
     awaiting_approval: { color: 'bg-[#e0af68]', text: 'Awaiting approval' },
     awaiting_response: { color: 'bg-[#e0af68]', text: 'Awaiting response' },
@@ -444,6 +637,7 @@ function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCo
           {/* Show status text for active sessions, project name for history */}
           {config.text ? (
             <div className={clsx('text-xs truncate', {
+              'text-[#7aa2f7]': displayState === 'user_typing', // ISSUE #5: Blue for user typing
               'text-[#9ece6a]': displayState === 'working',
               'text-[#e0af68]': displayState === 'awaiting_approval' || displayState === 'awaiting_response',
               'text-[#565f89]': displayState === 'completed',

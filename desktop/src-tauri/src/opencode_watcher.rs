@@ -496,6 +496,7 @@ impl OpenCodeWatcher {
             ActivityType::BashCommand => "bash_command",
             ActivityType::CodeDiff => "code_diff",
             ActivityType::Progress => "progress",
+            ActivityType::Summary => "summary",
         };
 
         tracing::debug!(

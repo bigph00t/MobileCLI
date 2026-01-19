@@ -699,10 +699,14 @@ pub async fn start_relay(
                                                         serde_json::json!({ "sessionId": session_id }),
                                                     );
                                                 }
-                                                ClientMessage::ResumeSession { session_id } => {
+                                                ClientMessage::ResumeSession { session_id, claude_skip_permissions } => {
+                                                    // ISSUE #2: Relay doesn't pass skip_permissions (uses config default)
                                                     let _ = app_clone.emit(
                                                         "relay-resume-session",
-                                                        serde_json::json!({ "sessionId": session_id }),
+                                                        serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "claudeSkipPermissions": claude_skip_permissions
+                                                        }),
                                                     );
                                                 }
                                                 ClientMessage::Hello { .. } => {
@@ -799,6 +803,7 @@ pub async fn start_relay(
                                                                                     crate::parser::ActivityType::BashCommand => "bash_command",
                                                                                     crate::parser::ActivityType::CodeDiff => "code_diff",
                                                                                     crate::parser::ActivityType::Progress => "progress",
+                                                                                    crate::parser::ActivityType::Summary => "summary",
                                                                                 };
                                                                                 ActivityInfo {
                                                                                     activity_type: activity_type_str.to_string(),
@@ -809,6 +814,7 @@ pub async fn start_relay(
                                                                                     is_streaming: a.is_streaming,
                                                                                     timestamp: a.timestamp,
                                                                                     uuid: a.uuid,
+                                                                                    summary: a.summary, // ISSUE #11
                                                                                 }
                                                                             })
                                                                             .collect();
