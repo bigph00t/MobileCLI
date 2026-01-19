@@ -446,6 +446,13 @@ pub enum ServerMessage {
         session_id: String,
         output: String,
     },
+    /// Raw PTY bytes (base64 encoded) for xterm.js rendering
+    /// This is the raw terminal output without ANSI stripping - used by mobile xterm.js WebView
+    PtyBytes {
+        session_id: String,
+        /// Base64 encoded raw bytes from PTY
+        data: String,
+    },
     WaitingForInput {
         session_id: String,
         timestamp: String,
@@ -612,6 +619,18 @@ pub async fn start_server(
                 output: output.to_string(),
             };
             let _ = broadcast_tx_clone.send(msg);
+        }
+    });
+
+    // Listen for raw PTY bytes (base64 encoded) for xterm.js rendering on mobile
+    let broadcast_tx_pty_bytes = broadcast_tx.clone();
+    app.listen("pty-bytes", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let msg = ServerMessage::PtyBytes {
+                session_id: payload["sessionId"].as_str().unwrap_or("").to_string(),
+                data: payload["data"].as_str().unwrap_or("").to_string(),
+            };
+            let _ = broadcast_tx_pty_bytes.send(msg);
         }
     });
 

@@ -1,5 +1,6 @@
 // PTY module - Manages AI CLI processes in pseudo-terminals
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use crate::codex;
 use crate::codex_watcher::CodexWatcher;
 use crate::config;
@@ -675,6 +676,16 @@ impl SessionManager {
                                 "sessionId": session_id_clone,
                                 "output": cleaned,
                                 "raw": output,
+                            }),
+                        );
+
+                        // Emit raw bytes (base64 encoded) for xterm.js rendering on mobile
+                        // This preserves all terminal escape sequences for perfect rendering
+                        let _ = app.emit(
+                            "pty-bytes",
+                            serde_json::json!({
+                                "sessionId": session_id_clone,
+                                "data": BASE64.encode(&buffer[..n]),
                             }),
                         );
 
@@ -1424,6 +1435,16 @@ impl SessionManager {
                                 "sessionId": session_id_clone,
                                 "output": cleaned,
                                 "raw": output,
+                            }),
+                        );
+
+                        // Emit raw bytes (base64 encoded) for xterm.js rendering on mobile
+                        // This preserves all terminal escape sequences for perfect rendering
+                        let _ = app.emit(
+                            "pty-bytes",
+                            serde_json::json!({
+                                "sessionId": session_id_clone,
+                                "data": BASE64.encode(&buffer[..n]),
                             }),
                         );
 

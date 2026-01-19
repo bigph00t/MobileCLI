@@ -104,6 +104,11 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
     return `mobilecli://tailscale?${params.toString()}`;
   };
 
+  const getLocalQrValue = () => {
+    const params = new URLSearchParams({ url: wsUrl });
+    return `mobilecli://direct?${params.toString()}`;
+  };
+
 
   const handleDefaultCliChange = (cliId: string) => {
     setDefaultCli(cliId);
@@ -387,7 +392,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                             </p>
                             <div className="bg-white p-4 rounded-lg mb-4">
                               <QRCodeCanvas
-                                value={wsUrl}
+                                value={getLocalQrValue()}
                                 size={180}
                                 level="M"
                                 bgColor="#ffffff"
