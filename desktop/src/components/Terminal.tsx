@@ -180,6 +180,66 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const onDataRef = useRef(onData);
   const [themeName, setThemeName] = useState<TerminalThemeName>(getCurrentTerminalTheme);
+  const [mobileViewing, setMobileViewing] = useState<{ connected: boolean; cols?: number; rows?: number } | null>(null);
+  // Ref to track mobileViewing for callbacks (avoids stale closure issues)
+  const mobileViewingRef = useRef(mobileViewing);
+
+  // Listen for mobile-viewing events from Tauri backend
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setupListener = async () => {
+      unlisten = await listen<{ sessionId: string; connected: boolean; cols?: number; rows?: number }>(
+        'mobile-viewing',
+        (event) => {
+          // Only respond to events for this specific session
+          if (event.payload.sessionId !== sessionId) {
+            return;
+          }
+          if (event.payload.connected) {
+            setMobileViewing({
+              connected: true,
+              cols: event.payload.cols,
+              rows: event.payload.rows,
+            });
+          } else {
+            setMobileViewing(null);
+          }
+        }
+      );
+    };
+
+    setupListener();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [sessionId]);
+
+  // Keep mobileViewingRef in sync with state (for callbacks to access current value)
+  useEffect(() => {
+    mobileViewingRef.current = mobileViewing;
+  }, [mobileViewing]);
+
+  // When mobile connects, resize terminal to mobile dimensions
+  // When mobile disconnects, resize terminal back to desktop dimensions
+  useEffect(() => {
+    const instance = terminals.get(sessionId);
+    if (!instance?.term) return;
+
+    if (mobileViewing?.connected && mobileViewing.cols && mobileViewing.rows) {
+      // Mobile connected - resize xterm.js to match mobile dimensions
+      instance.term.resize(mobileViewing.cols, mobileViewing.rows);
+    } else if (mobileViewing === null && instance.fitAddon) {
+      // Mobile disconnected - resize back to desktop dimensions
+      requestAnimationFrame(() => {
+        instance.fitAddon.fit();
+        sendResize(sessionId, instance.term.rows, instance.term.cols);
+      });
+    }
+  }, [mobileViewing, sessionId]);
 
   // Listen for theme changes and update all terminals
   useEffect(() => {
@@ -207,25 +267,16 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
 
   // Keep onData ref updated AND sync to terminal instance
   useEffect(() => {
-    console.log('[Terminal] First useEffect running:', {
-      sessionId,
-      hasOnData: !!onData,
-      hasInstance: !!terminals.get(sessionId),
-      instanceInitialized: terminals.get(sessionId)?.initialized,
-    });
     onDataRef.current = onData;
     // Also update the callback on the terminal instance if it exists
     const instance = terminals.get(sessionId);
     if (instance) {
       instance.onDataCallback = onData;
-      console.log('[Terminal] Updated onDataCallback on existing instance');
       // FIX: Ensure terminal is focused when callback updates
       // This helps with sync issues where terminal appears unresponsive
       if (instance.initialized && instance.term) {
         instance.term.focus();
       }
-    } else {
-      console.log('[Terminal] No instance found in first useEffect');
     }
   }, [onData, sessionId]);
 
@@ -238,11 +289,6 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
   }, []);
 
   useEffect(() => {
-    console.log('[Terminal] Second useEffect running:', {
-      sessionId,
-      hasWrapper: !!wrapperRef.current,
-      hasOnDataRef: !!onDataRef.current,
-    });
     if (!wrapperRef.current) return;
 
     const wrapper = wrapperRef.current;
@@ -256,14 +302,8 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
 
     // Get or create terminal for this session
     let instance = terminals.get(sessionId);
-    console.log('[Terminal] Instance check:', {
-      exists: !!instance,
-      initialized: instance?.initialized,
-      hasCallback: !!instance?.onDataCallback,
-    });
 
     if (!instance || !instance.initialized) {
-      console.log('[Terminal] Creating new terminal for session:', sessionId);
       // Get any buffered data from JS memory
       const bufferedData = instance?.buffer || [];
 
@@ -295,23 +335,10 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
 
       instance = { term, fitAddon, container, buffer: [], initialized: true, inputBuffer: '', cursorPosition: 0, onDataCallback: onDataRef.current };
       terminals.set(sessionId, instance);
-      console.log('[Terminal] Created new terminal instance:', {
-        sessionId,
-        hasOnDataCallback: !!instance.onDataCallback,
-        onDataRefCurrent: !!onDataRef.current,
-      });
 
       // Handle user input - filter out focus events and track input state
       term.onData((data) => {
-        console.log('[Terminal] onData called:', {
-          data: data.length > 20 ? data.slice(0, 20) + '...' : data,
-          hex: Array.from(data).map(c => c.charCodeAt(0).toString(16)).join(' '),
-          sessionId,
-          hasOnDataRef: !!onDataRef.current,
-        });
-
         if (data === '\x1b[I' || data === '\x1b[O') {
-          console.log('[Terminal] Filtered focus event');
           return;
         }
 
@@ -376,9 +403,7 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
 
         // Use the callback stored in the instance (updated each mount to avoid stale refs)
         const currentInst = terminals.get(sessionId);
-        console.log('[Terminal] Calling onDataCallback, exists:', !!currentInst?.onDataCallback);
         currentInst?.onDataCallback?.(data);
-        console.log('[Terminal] onDataCallback called successfully');
       });
 
       // Open terminal in its container
@@ -387,7 +412,10 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
       // Small delay to ensure DOM is ready
       requestAnimationFrame(() => {
         fitAddon.fit();
-        sendResize(sessionId, term.rows, term.cols);
+        // Only send desktop dimensions if mobile is not viewing (mobile takes priority)
+        if (!mobileViewingRef.current?.connected) {
+          sendResize(sessionId, term.rows, term.cols);
+        }
 
         // Write JS-buffered data
         bufferedData.forEach((data) => term.write(data));
@@ -405,25 +433,30 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
       // CRITICAL: Update the onDataCallback to the current component's callback
       // This fixes the stale ref issue when the component remounts
       instance.onDataCallback = onDataRef.current;
-      console.log('[Terminal] Updated onDataCallback for existing terminal, sessionId:', sessionId);
 
-      // Re-fit and send resize
+      // Re-fit and send resize (only if mobile is not viewing)
       requestAnimationFrame(() => {
         if (instance) {
           instance.fitAddon.fit();
-          sendResize(sessionId, instance.term.rows, instance.term.cols);
+          // Only send desktop dimensions if mobile is not viewing (mobile takes priority)
+          if (!mobileViewingRef.current?.connected) {
+            sendResize(sessionId, instance.term.rows, instance.term.cols);
+          }
           instance.term.focus();
         }
       });
     }
 
-    // Handle resize
+    // Handle resize - only send desktop dimensions if mobile is not viewing
     const handleResize = () => {
       const inst = terminals.get(sessionId);
       if (inst?.fitAddon && inst?.term && inst.container.style.display !== 'none') {
         try {
           inst.fitAddon.fit();
-          sendResize(sessionId, inst.term.rows, inst.term.cols);
+          // Mobile dimensions take priority - don't override when mobile is viewing
+          if (!mobileViewingRef.current?.connected) {
+            sendResize(sessionId, inst.term.rows, inst.term.cols);
+          }
         } catch (e) {
           // Ignore
         }
@@ -474,7 +507,6 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
       if (inst?.initialized && inst?.term && inst.container.style.display !== 'none') {
         const termElement = inst.term.element;
         if (termElement && !termElement.contains(activeElement)) {
-          console.log('[Terminal] Global keydown detected, focusing terminal for session:', sessionId, 'key:', e.key);
           inst.term.focus();
 
           // Forward the keypress to xterm via onDataCallback
@@ -509,7 +541,6 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
             }
 
             if (data) {
-              console.log('[Terminal] Forwarding captured keypress to PTY:', JSON.stringify(data));
               inst.onDataCallback(data);
               e.preventDefault(); // Prevent double input
             }
@@ -555,6 +586,8 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
   }, [sessionId, sendResize]);
 
   // Listen for input state from mobile clients via Tauri events
+  // With direct PTY passthrough, mobile sends keystrokes directly to PTY
+  // and echo flows back via pty_bytes - no visual echo needed here
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -579,15 +612,15 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
           }
 
           const instance = terminals.get(sessionId);
-          if (!instance?.initialized) return;
+          if (!instance?.initialized || !instance.term) return;
 
           const newText = event.payload.text;
+          const newCursor = event.payload.cursorPosition ?? newText.length;
 
-          // Update local tracking
+          // Just update internal tracking - NO visual echo
+          // Mobile now sends directly to PTY, echo flows back via pty_bytes
           instance.inputBuffer = newText;
-          instance.cursorPosition = event.payload.cursorPosition ?? newText.length;
-
-          console.log('[Terminal] Remote input from:', event.payload.senderId, ':', newText.slice(0, 50));
+          instance.cursorPosition = newCursor;
         }
       );
     };
@@ -615,8 +648,6 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
 
           const instance = terminals.get(sessionId);
           if (!instance?.initialized) return;
-
-          console.log('[Terminal] Received request-input-state, sending current inputBuffer:', instance.inputBuffer);
 
           // Emit current input state so mobile can sync
           emitInputState(sessionId, instance.inputBuffer, instance.cursorPosition);
@@ -649,7 +680,6 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
       // If terminal doesn't have focus, focus it and let xterm handle the key
       const termElement = instance.term.element;
       if (termElement && !termElement.contains(document.activeElement)) {
-        console.log('[Terminal] Wrapper captured keydown, focusing terminal');
         instance.term.focus();
         // Don't prevent default - let the key event flow naturally
       }
@@ -671,14 +701,29 @@ export default function Terminal({ sessionId, onData }: TerminalProps) {
   }, [sessionId]);
 
   return (
-    <div
-      ref={wrapperRef}
-      className="w-full h-full terminal-wrapper"
-      style={{ backgroundColor: TERMINAL_THEMES[themeName].background, padding: '0' }}
-      onClick={handleClick}
-      onKeyDown={handleKeyDown}
-      onMouseEnter={handleMouseEnter}
-      tabIndex={0}
-    />
+    <div className="w-full h-full relative">
+      <div
+        ref={wrapperRef}
+        className="w-full h-full terminal-wrapper"
+        style={{ backgroundColor: TERMINAL_THEMES[themeName].background, padding: '0' }}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        onMouseEnter={handleMouseEnter}
+        tabIndex={0}
+      />
+      {mobileViewing && (
+        <div
+          className="absolute top-0 left-0 right-0 px-3 py-2 text-center text-sm"
+          style={{
+            backgroundColor: 'rgba(30, 58, 138, 0.95)',
+            color: '#93c5fd',
+            zIndex: 10,
+            borderBottom: '1px solid rgba(59, 130, 246, 0.5)',
+          }}
+        >
+          📱 Mobile viewing ({mobileViewing.cols}×{mobileViewing.rows}) — Close mobile app to restore full terminal size
+        </div>
+      )}
+    </div>
   );
 }

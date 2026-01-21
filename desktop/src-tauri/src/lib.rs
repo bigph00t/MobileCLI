@@ -17,6 +17,7 @@ mod pty;
 mod relay;
 mod ws;
 
+use base64::Engine;
 use client_mode::ClientConnection;
 use db::Database;
 use input_coordinator::InputCoordinator;
@@ -1142,6 +1143,8 @@ pub fn run() {
             // Additional clones for relay-specific handlers
             let session_manager_for_relay_create = session_manager.clone();
             let session_manager_for_relay_resume = session_manager.clone();
+            let session_manager_for_resize = session_manager.clone();
+            let session_manager_for_history = session_manager.clone();
 
             // Store state
             // 500ms debounce between different input senders to prevent race conditions
@@ -1295,10 +1298,8 @@ pub fn run() {
                             if can_execute {
                                 // Execute input immediately
                                 let result = if raw {
-                                    tracing::info!("Sending raw input to PTY for session {}: {:?}", sid, txt);
                                     mgr.send_raw_input(&sid, &txt).await
                                 } else {
-                                    tracing::info!("Sending regular input to PTY for session {}", sid);
                                     mgr.send_input(&sid, &txt).await
                                 };
                                 if let Err(e) = result {
@@ -1311,7 +1312,6 @@ pub fn run() {
                                         }),
                                     );
                                 } else {
-                                    tracing::info!("Successfully sent input to session {}", sid);
 
                                     // CRITICAL FIX: For non-raw sends (mobile complete messages),
                                     // emit an event to clear the desktop frontend's inputBuffer.
@@ -1327,11 +1327,8 @@ pub fn run() {
                                                 "senderId": "mobile-clear",
                                             }),
                                         );
-                                        tracing::info!("Emitted input-state clear for session {}", sid);
                                     }
                                 }
-                            } else {
-                                tracing::info!("Input from {} queued due to debounce", sender);
                             }
 
                             // Clear typing indicator after delay
@@ -1347,6 +1344,70 @@ pub fn run() {
                         });
                     } else {
                         tracing::warn!("send-input event with empty session_id or (non-raw) empty text");
+                    }
+                }
+            });
+
+            // Listen for pty-resize events from WebSocket (mobile sends terminal dimensions)
+            app.listen("pty-resize", move |event| {
+                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                    let session_id = payload["sessionId"].as_str().unwrap_or("").to_string();
+                    let cols = payload["cols"].as_u64().unwrap_or(80) as u16;
+                    let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
+
+                    if !session_id.is_empty() && cols > 0 && rows > 0 {
+                        tracing::info!(
+                            "EVENT pty-resize: session={}, cols={}, rows={}",
+                            session_id, cols, rows
+                        );
+                        let manager = session_manager_for_resize.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mgr = manager.read().await;
+                            if let Err(e) = mgr.resize(&session_id, rows, cols) {
+                                tracing::error!("Failed to resize PTY {}: {}", session_id, e);
+                            } else {
+                                tracing::info!("Successfully resized PTY {} to {}x{}", session_id, cols, rows);
+                            }
+                        });
+                    } else {
+                        tracing::warn!("pty-resize event with invalid parameters: session={}, cols={}, rows={}",
+                            session_id, cols, rows);
+                    }
+                }
+            });
+
+            // Listen for request-pty-history events from WebSocket (mobile client subscribing)
+            // This sends the PTY output history so new subscribers can see recent terminal output
+            let app_handle_history = app.handle().clone();
+            app.listen("request-pty-history", move |event| {
+                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                    let session_id = payload["sessionId"].as_str().unwrap_or("").to_string();
+
+                    if !session_id.is_empty() {
+                        tracing::info!("EVENT request-pty-history: session={}", session_id);
+                        let manager = session_manager_for_history.clone();
+                        let app = app_handle_history.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mgr = manager.read().await;
+                            if let Some(history) = mgr.get_output_history(&session_id) {
+                                if !history.is_empty() {
+                                    // Send history as pty-bytes event (base64 encoded)
+                                    let data = base64::engine::general_purpose::STANDARD.encode(&history);
+                                    let _ = app.emit(
+                                        "pty-bytes",
+                                        serde_json::json!({
+                                            "sessionId": session_id,
+                                            "data": data,
+                                        }),
+                                    );
+                                    tracing::info!(
+                                        "Sent {} bytes of PTY history for session {}",
+                                        history.len(),
+                                        session_id
+                                    );
+                                }
+                            }
+                        });
                     }
                 }
             });

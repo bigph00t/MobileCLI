@@ -462,6 +462,7 @@ pub async fn start_relay(
                 timestamp: payload["timestamp"].as_str().unwrap_or("").to_string(),
                 prompt_content: payload["promptContent"].as_str().map(String::from),
                 wait_type: payload["waitType"].as_str().map(String::from),
+                cli_type: payload["cliType"].as_str().map(String::from),
             };
             if let Ok(json) = serde_json::to_string(&msg) {
                 if let Ok(encrypted) = encrypt_message(&key_wait, &json) {
@@ -1070,6 +1071,34 @@ pub async fn start_relay(
                                                     let msg = ServerMessage::PushTokenRegistered {
                                                         token_type: token_type.clone(),
                                                         platform: platform.clone(),
+                                                    };
+                                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                                        if let Ok(encrypted) = encrypt_message(&key_response, &json) {
+                                                            let _ = tx_response.send(encrypted);
+                                                        }
+                                                    }
+                                                }
+                                                ClientMessage::PtyResize { session_id, cols, rows } => {
+                                                    tracing::info!(
+                                                        "PTY resize via relay: session={}, cols={}, rows={}",
+                                                        session_id, cols, rows
+                                                    );
+
+                                                    // Emit event for PTY module to handle the resize
+                                                    let _ = app_clone.emit(
+                                                        "pty-resize",
+                                                        serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "cols": cols,
+                                                            "rows": rows,
+                                                        }),
+                                                    );
+
+                                                    // Send acknowledgment back to mobile
+                                                    let msg = ServerMessage::PtyResized {
+                                                        session_id: session_id.clone(),
+                                                        cols: *cols,
+                                                        rows: *rows,
                                                     };
                                                     if let Ok(json) = serde_json::to_string(&msg) {
                                                         if let Ok(encrypted) = encrypt_message(&key_response, &json) {

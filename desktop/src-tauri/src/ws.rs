@@ -7,9 +7,10 @@ use crate::jsonl;
 use crate::parser::ActivityType;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Listener};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -23,6 +24,8 @@ const MAX_TOTAL_CONNECTIONS: usize = 50;
 
 type Tx = mpsc::UnboundedSender<Message>;
 type PeerMap = Arc<RwLock<HashMap<SocketAddr, Tx>>>;
+/// Tracks which sessions each mobile client is viewing (for disconnect handling)
+type MobileViewingMap = Arc<RwLock<HashMap<SocketAddr, std::collections::HashSet<String>>>>;
 
 /// Push notification token storage
 #[derive(Debug, Clone)]
@@ -381,6 +384,12 @@ pub enum ClientMessage {
         #[serde(default)]
         sender_id: Option<String>,
     },
+    /// Resize PTY for a session - mobile sends terminal dimensions
+    PtyResize {
+        session_id: String,
+        cols: u16,
+        rows: u16,
+    },
     /// Heartbeat ping - client sends to check connection health
     Ping,
     /// Register push notification token from mobile client
@@ -460,6 +469,8 @@ pub enum ServerMessage {
         prompt_content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         wait_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cli_type: Option<String>,
     },
     /// Tool approval was accepted/rejected - dismiss mobile modal
     WaitingCleared {
@@ -524,6 +535,12 @@ pub enum ServerMessage {
     PushTokenRegistered {
         token_type: String,
         platform: String,
+    },
+    /// PTY resize confirmation - sent back to mobile after resize
+    PtyResized {
+        session_id: String,
+        cols: u16,
+        rows: u16,
     },
 }
 
@@ -597,6 +614,9 @@ pub async fn start_server(
 
     let peers: PeerMap = Arc::new(RwLock::new(HashMap::new()));
 
+    // Track which sessions each mobile client is viewing (for disconnect notifications)
+    let mobile_viewing: MobileViewingMap = Arc::new(RwLock::new(HashMap::new()));
+
     // Recent events queue for session events - replays to new subscribers
     let recent_events: RecentEventsQueue = Arc::new(RwLock::new(Vec::new()));
 
@@ -666,6 +686,7 @@ pub async fn start_server(
             let session_id = payload["sessionId"].as_str().unwrap_or("").to_string();
             let timestamp = payload["timestamp"].as_str().unwrap_or("").to_string();
             let prompt_content = payload["promptContent"].as_str().map(|s| s.to_string());
+            let cli_type = payload["cliType"].as_str().map(|s| s.to_string());
 
             let wait_type = payload["waitType"].as_str().map(|s| s.to_string());
             let msg = ServerMessage::WaitingForInput {
@@ -673,44 +694,51 @@ pub async fn start_server(
                 timestamp,
                 prompt_content: prompt_content.clone(),
                 wait_type: wait_type.clone(),
+                cli_type: cli_type.clone(),
             };
             tracing::debug!("Broadcasting waiting-for-input event with prompt content");
             let _ = broadcast_tx_clone3.send(msg);
 
             // Send push notification to mobile devices
             // Determine notification content based on prompt
+            let cli_label = match cli_type.as_deref() {
+                Some("gemini") => "Gemini",
+                Some("codex") => "Codex",
+                Some("opencode") => "OpenCode",
+                _ => "Claude",
+            };
             let (title, body) = if let Some(ref wait_type) = wait_type {
                 match wait_type.as_str() {
                     "tool_approval" => (
                         "Tool Approval Needed".to_string(),
-                        "Claude needs permission to proceed".to_string(),
+                        format!("{} needs permission to proceed", cli_label),
                     ),
                     "plan_approval" => (
                         "Plan Approval Needed".to_string(),
-                        "Claude has a plan ready for review".to_string(),
+                        format!("{} has a plan ready for review", cli_label),
                     ),
                     "clarifying_question" => (
-                        "Claude has a question".to_string(),
+                        format!("{} has a question", cli_label),
                         prompt_content
                             .as_ref()
                             .map(|content| content.chars().take(100).collect::<String>())
                             .unwrap_or_else(|| "Tap to respond".to_string()),
                     ),
                     _ => (
-                        "Claude is ready".to_string(),
+                        format!("{} is ready", cli_label),
                         "Waiting for your input".to_string(),
                     ),
                 }
             } else if let Some(ref content) = prompt_content {
                 if content.contains("approval") || content.contains("permission") || content.contains("Allow") {
-                    ("Tool Approval Needed".to_string(), "Claude needs permission to proceed".to_string())
+                    ("Tool Approval Needed".to_string(), format!("{} needs permission to proceed", cli_label))
                 } else if content.contains("?") {
-                    ("Claude has a question".to_string(), content.chars().take(100).collect::<String>())
+                    (format!("{} has a question", cli_label), content.chars().take(100).collect::<String>())
                 } else {
-                    ("Claude is ready".to_string(), "Waiting for your input".to_string())
+                    (format!("{} is ready", cli_label), "Waiting for your input".to_string())
                 }
             } else {
-                ("Claude is ready".to_string(), "Waiting for your input".to_string())
+                (format!("{} is ready", cli_label), "Waiting for your input".to_string())
             };
 
             let session_id_clone = session_id.clone();
@@ -986,15 +1014,31 @@ pub async fn start_server(
         let app = app.clone();
         let broadcast_rx = broadcast_tx.subscribe();
         let recent_events = recent_events.clone();
+        let mobile_viewing = mobile_viewing.clone();
 
         tokio::spawn(async move {
             if let Err(e) =
-                handle_connection(stream, addr, peers.clone(), db, app, broadcast_rx, recent_events).await
+                handle_connection(stream, addr, peers.clone(), db, app.clone(), broadcast_rx, recent_events, mobile_viewing.clone()).await
             {
                 tracing::error!("Connection error for {}: {}", addr, e);
             }
             // Remove peer on disconnect
             peers.write().await.remove(&addr);
+
+            // Emit mobile-viewing disconnected for any sessions this client was viewing
+            {
+                let mut viewing = mobile_viewing.write().await;
+                if let Some(sessions) = viewing.remove(&addr) {
+                    for session_id in sessions {
+                        tracing::info!("Mobile client {} disconnected from session {}", addr, session_id);
+                        let _ = app.emit("mobile-viewing", serde_json::json!({
+                            "sessionId": session_id,
+                            "connected": false,
+                        }));
+                    }
+                }
+            }
+
             tracing::info!("Client disconnected: {}", addr);
         });
     }
@@ -1010,6 +1054,7 @@ async fn handle_connection(
     app: AppHandle,
     mut broadcast_rx: broadcast::Receiver<ServerMessage>,
     recent_events: RecentEventsQueue,
+    mobile_viewing: MobileViewingMap,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws_stream = accept_async(stream).await?;
     tracing::info!("New WebSocket connection: {}", addr);
@@ -1072,11 +1117,57 @@ async fn handle_connection(
         }
     });
 
+    let mut subscribed_sessions: HashSet<String> = HashSet::new();
+    let mut recently_unsubscribed: HashMap<String, Instant> = HashMap::new();
+    const RESIZE_IGNORE_AFTER_UNSUB_MS: u64 = 1500;
+
     // Handle incoming messages
     while let Some(msg) = ws_receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
+                    match &client_msg {
+                        ClientMessage::Subscribe { session_id } => {
+                            subscribed_sessions.insert(session_id.clone());
+                            recently_unsubscribed.remove(session_id);
+                        }
+                        ClientMessage::Unsubscribe { session_id } => {
+                            subscribed_sessions.remove(session_id);
+                            recently_unsubscribed.insert(session_id.clone(), Instant::now());
+                            let mut viewing = mobile_viewing.write().await;
+                            if let Some(sessions) = viewing.get_mut(&addr) {
+                                sessions.remove(session_id);
+                                if sessions.is_empty() {
+                                    viewing.remove(&addr);
+                                }
+                            }
+                        }
+                        ClientMessage::PtyResize { session_id, .. } => {
+                            if !subscribed_sessions.contains(session_id) {
+                                if let Some(last_unsub) = recently_unsubscribed.get(session_id) {
+                                    if last_unsub.elapsed() < Duration::from_millis(RESIZE_IGNORE_AFTER_UNSUB_MS) {
+                                        tracing::info!(
+                                            "Ignoring PTY resize for session {} (recent unsubscribe)",
+                                            session_id
+                                        );
+                                        continue;
+                                    }
+                                }
+                                // Treat first resize as implicit subscribe so initial sizing still works.
+                                subscribed_sessions.insert(session_id.clone());
+                                recently_unsubscribed.remove(session_id);
+                            }
+
+                            // Track PtyResize for mobile-viewing disconnect notifications
+                            let mut viewing = mobile_viewing.write().await;
+                            viewing
+                                .entry(addr)
+                                .or_insert_with(HashSet::new)
+                                .insert(session_id.clone());
+                            tracing::info!("Mobile client {} now viewing session {}", addr, session_id);
+                        }
+                        _ => {}
+                    }
                     let response = handle_client_message(client_msg, &db, &app).await;
                     if let Ok(json) = serde_json::to_string(&response) {
                         let _ = tx.send(Message::Text(json));
@@ -1643,6 +1734,15 @@ async fn handle_client_message(
                 }),
             );
 
+            // Request PTY output history so mobile sees recent terminal output
+            // This allows mobile to see session state even when connecting after desktop
+            let _ = app.emit(
+                "request-pty-history",
+                serde_json::json!({
+                    "sessionId": session_id,
+                }),
+            );
+
             // New: Send recent activities immediately so tool calls appear on mobile
             let activities = if let Ok(Some(session)) = db.get_session(&session_id) {
                 let limit_val = 120;
@@ -1718,8 +1818,16 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::Unsubscribe { .. } => {
-            // Unsubscription doesn't need special handling
+        ClientMessage::Unsubscribe { session_id } => {
+            // Emit mobile-viewing disconnected when mobile navigates away from session
+            tracing::info!("Mobile unsubscribed from session {}, emitting mobile-viewing disconnect", session_id);
+            let _ = app.emit(
+                "mobile-viewing",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "connected": false,
+                }),
+            );
             ServerMessage::Welcome {
                 server_version: "0.1.0".to_string(),
                 authenticated: true,
@@ -1948,6 +2056,49 @@ async fn handle_client_message(
         ClientMessage::Ping => {
             // Respond immediately to heartbeat ping
             ServerMessage::Pong
+        }
+
+        ClientMessage::PtyResize {
+            session_id,
+            cols,
+            rows,
+        } => {
+            tracing::info!(
+                "PTY resize request from mobile: session={}, cols={}, rows={}",
+                session_id,
+                cols,
+                rows
+            );
+
+            // Emit event for PTY module to handle the resize
+            let _ = app.emit(
+                "pty-resize",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "cols": cols,
+                    "rows": rows,
+                }),
+            );
+
+            // Emit event to notify desktop that mobile is viewing with specific dimensions
+            // Desktop can show a banner and constrain its view to match mobile
+            tracing::info!("EMITTING mobile-viewing event for session {} ({}x{})", session_id, cols, rows);
+            let emit_result = app.emit(
+                "mobile-viewing",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "cols": cols,
+                    "rows": rows,
+                    "connected": true,
+                }),
+            );
+            tracing::info!("mobile-viewing emit result: {:?}", emit_result);
+
+            ServerMessage::PtyResized {
+                session_id,
+                cols,
+                rows,
+            }
         }
 
         ClientMessage::RegisterPushToken {

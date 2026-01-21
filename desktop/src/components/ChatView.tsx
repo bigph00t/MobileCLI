@@ -51,29 +51,14 @@ export default function ChatView({ session, onClose }: ChatViewProps) {
   // Handle terminal input - send directly to PTY
   const handleTerminalData = useCallback(
     async (data: string) => {
-      const timestamp = new Date().toISOString();
-      console.log('[ChatView] handleTerminalData called:', {
-        timestamp,
-        sessionId: session.id,
-        sessionStatus: session.status,
-        dataLength: data.length,
-        data: data.length > 20 ? data.slice(0, 20) + '...' : data,
-        dataHex: Array.from(data).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' '),
-      });
-
       // Don't send input if session is not active
       if (session.status !== 'active') {
-        console.warn('[ChatView] Session not active, skipping input');
         return;
       }
 
       try {
         // Send raw input to PTY (including special keys)
-        console.log('[ChatView] Invoking send_raw_input...');
-        const startTime = performance.now();
         await invoke('send_raw_input', { sessionId: session.id, input: data });
-        const duration = performance.now() - startTime;
-        console.log('[ChatView] send_raw_input completed successfully in', duration.toFixed(2), 'ms');
       } catch (e) {
         console.error('[ChatView] Failed to send input:', e);
       }

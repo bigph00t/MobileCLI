@@ -205,8 +205,6 @@ function App() {
       const { sessionId } = event.payload;
       const waitingState = useSessionStore.getState().waitingStates[sessionId];
 
-      console.log('[App] Received request-waiting-state for session', sessionId, 'current state:', waitingState);
-
       // Emit the current waiting state so mobile can sync
       // If there's a waiting state, emit it as waiting-for-input event
       // If no waiting state, emit waiting-cleared to ensure mobile is in sync
@@ -217,14 +215,12 @@ function App() {
           promptContent: waitingState.promptContent || '',
           waitType: waitingState.waitType,
         });
-        console.log('[App] Sent waiting-for-input to mobile for session', sessionId);
       } else {
         // No waiting state - send cleared to ensure mobile shows correct status
         await emit('waiting-cleared', {
           sessionId,
           timestamp: new Date().toISOString(),
         });
-        console.log('[App] Sent waiting-cleared to mobile for session', sessionId);
       }
     });
 

@@ -80,6 +80,8 @@ pub struct OutputParser {
     waiting_for_input: bool,
     /// Last time we detected waiting state (to debounce)
     last_waiting_check: std::time::Instant,
+    /// Last time we saw thinking/progress output
+    last_thinking_at: Option<std::time::Instant>,
     /// Pending message to be retrieved (kept for test compatibility)
     #[allow(dead_code)]
     pending_message: Option<ParsedMessage>,
@@ -98,10 +100,84 @@ impl OutputParser {
             conversation_id: None,
             waiting_for_input: false,
             last_waiting_check: std::time::Instant::now(),
+            last_thinking_at: None,
             pending_message: None,
             seen_response_content: false,
             last_emitted_content: String::new(),
         }
+    }
+
+    fn is_prompt_line(&self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        match self.cli_type {
+            CliType::ClaudeCode | CliType::Codex | CliType::GeminiCli | CliType::OpenCode => {
+                trimmed == ">" || trimmed == "❯"
+            }
+        }
+    }
+
+    fn is_prompt_trailer_line(&self, line: &str) -> bool {
+        let trimmed = line.trim().to_lowercase();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        let trailer_patterns = [
+            "? for shortcuts",
+            "shift+tab to cycle",
+            "tab to add additional",
+            "esc to interrupt",
+            "ctrl+c to interrupt",
+        ];
+
+        trailer_patterns.iter().any(|p| trimmed == *p)
+    }
+
+    fn has_prompt_in_recent_lines(&self, text: &str) -> bool {
+        let mut checked = 0;
+        for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
+            checked += 1;
+            if self.is_prompt_line(line) {
+                return true;
+            }
+            if self.is_prompt_trailer_line(line) {
+                if checked < 6 {
+                    continue;
+                }
+            }
+            break;
+        }
+        false
+    }
+
+    fn is_explicit_wait_prompt(&self, text_lower: &str) -> bool {
+        let patterns = [
+            "do you want to proceed",
+            "do you want to continue",
+            "allow this",
+            "allow once",
+            "allow always",
+            "yes, and don't ask again",
+            "press enter",
+            "enter to confirm",
+            "do you trust the files",
+            "[y/n]",
+            "(y/n)",
+            "approve this plan",
+            "plan mode",
+            "ready to implement",
+            "ready to code",
+            "which would you prefer",
+            "which option",
+            "what approach",
+            "askuserquestion",
+        ];
+
+        patterns.iter().any(|p| text_lower.contains(p))
     }
 
     /// Get CLI-specific thinking indicator patterns
@@ -211,34 +287,11 @@ impl OutputParser {
         // Claude Code shows "> " or "❯" at the start of a line when ready for input
         // Also look for permission prompts
 
-        let waiting_patterns = [
-            "\n> ",                   // Standard prompt
-            "\r\n> ",                 // Windows-style
-            "\n❯ ",                   // Unicode prompt
-            "\r\n❯ ",                 // Unicode Windows-style
-            "\n❯",                    // Unicode prompt without trailing space
-            "Allow?",                 // Permission prompt
-            "Continue?",              // Continuation prompt
-            "[Y/n]",                  // Yes/no prompt
-            "[y/N]",                  // Yes/no prompt (default no)
-            "Press Enter",            // Enter prompt
-            "(y/n)",                  // Alternative yes/no
-            "(Y/N)",                  // Alternative yes/no
-            "Enter to confirm",       // Trust prompt confirmation
-            "Do you trust the files", // Trust prompt question
-        ];
-
         let was_waiting = self.waiting_for_input;
 
-        // Check for prompts at start of text (in case chunk starts with prompt)
-        let starts_with_prompt = text.starts_with("> ") || text.starts_with("❯");
-
-        // Also check if a line ends with just the prompt character
-        let ends_with_prompt = text.trim_end().ends_with("❯") || text.trim_end().ends_with(">");
-
-        let is_waiting = starts_with_prompt
-            || ends_with_prompt
-            || waiting_patterns.iter().any(|p| text.contains(p));
+        let prompt_line = self.has_prompt_in_recent_lines(text);
+        let text_lower = text.to_lowercase();
+        let explicit_wait_prompt = self.is_explicit_wait_prompt(&text_lower);
 
         // Check if CLI is still thinking - uses CLI-specific patterns
         // Only check CURRENT chunk, not the accumulated buffer
@@ -262,8 +315,34 @@ impl OutputParser {
             .collect::<Vec<_>>()
             .join("\n");
 
+        // Braille spinner characters used by Claude Code
+        const SPINNER_CHARS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
         let thinking_patterns = self.get_thinking_patterns();
-        let is_still_thinking = thinking_patterns.iter().any(|p| filtered_text.contains(p));
+        let has_thinking_word = thinking_patterns.iter().any(|p| filtered_text.contains(p));
+        let has_spinner = SPINNER_CHARS.iter().any(|c| filtered_text.contains(*c));
+        // Check for progress messages ending with "..." that are short status updates
+        let has_progress = filtered_text.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.ends_with("...") && trimmed.len() < 100 && trimmed.len() > 3
+        });
+        // Additional thinking markers
+        let has_thinking_markers =
+            filtered_text.contains("● ") ||
+            filtered_text.contains("⎿") ||
+            filtered_text.starts_with("✢ ");
+
+        let is_still_thinking = has_thinking_word || has_spinner || has_progress || has_thinking_markers;
+        if is_still_thinking {
+            self.last_thinking_at = Some(std::time::Instant::now());
+        }
+
+        let has_recent_thinking = self
+            .last_thinking_at
+            .map(|t| t.elapsed().as_millis() < 800)
+            .unwrap_or(false);
+
+        let is_waiting = prompt_line || explicit_wait_prompt;
 
         // Finalize response when we see a prompt and we have accumulated content
         // This ensures responses are emitted even if the ● character wasn't detected
@@ -271,7 +350,7 @@ impl OutputParser {
         tracing::info!("check_waiting_for_input: is_waiting={}, is_still_thinking={}, state={:?}, buffer_len={}, seen_content={}",
             is_waiting, is_still_thinking, self.state, self.response_buffer.len(), self.seen_response_content);
         if is_waiting
-            && !is_still_thinking
+            && (!is_still_thinking || prompt_line)
             && (self.state == ParserState::AssistantResponding
                 || self.state == ParserState::WaitingForAssistant)
         {
@@ -295,7 +374,7 @@ impl OutputParser {
                     self.response_buffer.len()
                 );
             }
-        } else if is_waiting && is_still_thinking {
+        } else if is_waiting && is_still_thinking && !prompt_line {
             tracing::info!("Parser: detected prompt but Claude is STILL THINKING, not finalizing");
         } else if !is_waiting {
             tracing::debug!("Parser: not waiting for input");
@@ -307,8 +386,35 @@ impl OutputParser {
         // Only fire on transition from not-waiting to waiting state
         // Note: user_sent_input() resets waiting_for_input, so next prompt will trigger
         let elapsed = self.last_waiting_check.elapsed();
-        if is_waiting && !is_still_thinking && !was_waiting && elapsed.as_millis() >= 500 {
+        if is_waiting
+            && (!is_still_thinking || prompt_line)
+            && !was_waiting
+            && elapsed.as_millis() >= 500
+        {
             self.waiting_for_input = true;
+            self.last_waiting_check = std::time::Instant::now();
+            return true;
+        }
+
+        // TOOL APPROVAL RE-EMISSION FIX:
+        // If already waiting but current chunk contains tool approval patterns,
+        // re-emit the event so mobile gets the updated content.
+        // This fixes timing issues where options arrive AFTER the initial prompt.
+        // Use a longer debounce (1000ms) to prevent spam.
+        let has_tool_approval_patterns = text_lower.contains("1. yes")
+            || text_lower.contains("2. yes")
+            || text_lower.contains("3. no")
+            || text_lower.contains("yes, and don't ask")
+            || text_lower.contains("allow once")
+            || text_lower.contains("allow always");
+
+        if is_waiting
+            && (!is_still_thinking || prompt_line)
+            && was_waiting
+            && has_tool_approval_patterns
+            && elapsed.as_millis() >= 1000
+        {
+            tracing::info!("Parser: re-emitting waiting event with tool approval patterns in current chunk");
             self.last_waiting_check = std::time::Instant::now();
             return true;
         }

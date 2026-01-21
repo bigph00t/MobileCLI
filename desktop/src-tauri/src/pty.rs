@@ -11,8 +11,10 @@ use crate::jsonl_watcher::JsonlWatcher;
 use crate::opencode_watcher::{self, OpenCodeWatcher};
 use crate::parser::OutputParser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -56,6 +58,56 @@ pub enum PtyError {
     Lock,
 }
 
+/// Size of PTY output history buffer in bytes (32KB)
+/// This allows mobile clients to receive recent output when subscribing to an existing session
+const OUTPUT_HISTORY_SIZE: usize = 32 * 1024;
+
+fn maybe_write_pty_snapshot(
+    capture_dir: &Option<String>,
+    cli_type: CliType,
+    session_id: &str,
+    prompt_content: &str,
+    output_history: &Arc<Mutex<VecDeque<u8>>>,
+) {
+    let dir = match capture_dir {
+        Some(dir) if !dir.is_empty() => dir,
+        _ => return,
+    };
+
+    if !matches!(cli_type, CliType::ClaudeCode | CliType::Codex) {
+        return;
+    }
+
+    let bytes: Vec<u8> = match output_history.lock() {
+        Ok(history) => history.iter().copied().collect(),
+        Err(_) => return,
+    };
+
+    let prompt_excerpt: String = prompt_content.chars().take(400).collect();
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let filename = format!(
+        "{}_{}_{}.json",
+        session_id,
+        cli_type.as_str(),
+        timestamp.replace(':', "-")
+    );
+
+    let mut path = PathBuf::from(dir);
+    path.push(filename);
+
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "cli_type": cli_type.as_str(),
+        "timestamp": timestamp,
+        "prompt_excerpt": prompt_excerpt,
+        "pty_base64": BASE64.encode(&bytes),
+    });
+
+    if fs::create_dir_all(dir).is_ok() {
+        let _ = fs::write(path, payload.to_string());
+    }
+}
+
 struct PtySession {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
@@ -70,6 +122,9 @@ struct PtySession {
     /// Kept alive for its side effects (background thread watching for file changes)
     #[allow(dead_code)]
     cli_watcher: Option<CliWatcher>,
+    /// Ring buffer of recent PTY output for session history replay
+    /// New subscribers receive this history to see terminal state
+    output_history: Arc<Mutex<VecDeque<u8>>>,
 }
 
 /// Detect dynamic thinking/progress messages from Claude's PTY output
@@ -301,61 +356,110 @@ impl SessionManager {
         // Generate a conversation ID for Claude Code sessions
         let conversation_id = uuid::Uuid::new_v4().to_string();
 
-        let cmd = match cli_type {
+        // Build the actual CLI command, then wrap in shell with "stty -echo" to disable PTY echo.
+        // This prevents input from being echoed back to mobile clients - desktop xterm handles
+        // local echo display, so mobile only sees command output, not echoed keystrokes.
+        let shell_cmd = match cli_type {
             CliType::ClaudeCode => {
                 let claude_path = format!("{}/.local/bin/claude", home);
-                let mut cmd = CommandBuilder::new(&claude_path);
-                // Pass our generated session ID so we can resume later
-                cmd.arg("--session-id");
-                cmd.arg(&conversation_id);
-                // Add --dangerously-skip-permissions if enabled (mobile or config)
-                if use_skip_permissions {
-                    cmd.arg("--dangerously-skip-permissions");
+                let skip_perms_flag = if use_skip_permissions {
                     tracing::info!("Claude session starting with --dangerously-skip-permissions");
-                }
-                cmd.cwd(&project_path);
-                cmd
+                    " --dangerously-skip-permissions"
+                } else {
+                    ""
+                };
+                format!(
+                    "stty -echo; exec '{}' --session-id '{}'{}",
+                    claude_path, conversation_id, skip_perms_flag
+                )
             }
             CliType::GeminiCli => {
                 // Gemini CLI is typically installed via npm
-                let mut cmd = CommandBuilder::new("gemini");
-                cmd.cwd(&project_path);
-                cmd
+                "stty -echo; exec gemini".to_string()
             }
             CliType::OpenCode => {
                 // OpenCode is typically installed in ~/.opencode/bin/
                 let opencode_path = format!("{}/.opencode/bin/opencode", home);
-                let mut cmd = CommandBuilder::new(&opencode_path);
-                // OpenCode takes project path as positional argument
-                cmd.arg(&project_path);
-                cmd
+                format!(
+                    "stty -echo; exec '{}' '{}'",
+                    opencode_path, project_path
+                )
             }
             CliType::Codex => {
                 // Codex (OpenAI) is typically available on PATH
-                let mut cmd = CommandBuilder::new("codex");
-                // Use -C flag for working directory
-                cmd.arg("-C");
-                cmd.arg(&project_path);
-                // Add approval policy (mobile or config)
-                cmd.arg("-a");
-                cmd.arg(use_codex_policy.as_flag());
                 tracing::info!(
                     "Codex session starting with approval policy: {}",
                     use_codex_policy.as_flag()
                 );
-                cmd
+                format!(
+                    "stty -echo; exec codex -C '{}' -a {}",
+                    project_path, use_codex_policy.as_flag()
+                )
             }
         };
 
+        // Wrap in bash login shell to ensure PATH includes user's installed CLIs
+        // -l makes it a login shell which sources ~/.bash_profile or ~/.profile
+        // -i makes it interactive which sources ~/.bashrc
+        let mut cmd = CommandBuilder::new("/bin/bash");
+        cmd.arg("-l"); // Login shell - sources profile for PATH
+        cmd.arg("-c");
+        cmd.arg(&shell_cmd);
+        cmd.cwd(&project_path);
+
         // Apply common environment setup
-        let mut cmd = cmd;
-        if let Ok(path) = std::env::var("PATH") {
-            cmd.env("PATH", path);
+        // Build extended PATH that includes common CLI installation locations
+        let mut path_parts: Vec<String> = Vec::new();
+
+        // User's local bin (pip, etc.)
+        path_parts.push(format!("{}/.local/bin", home));
+
+        // npm global bin (gemini, codex, etc.)
+        path_parts.push(format!("{}/.npm-global/bin", home));
+        path_parts.push(format!("{}/node_modules/.bin", home));
+
+        // nvm managed node (fallback to ~/.nvm if NVM_DIR not set)
+        let nvm_dir = std::env::var("NVM_DIR").ok().or_else(|| {
+            let default_dir = format!("{}/.nvm", home);
+            if std::path::Path::new(&default_dir).exists() {
+                Some(default_dir)
+            } else {
+                None
+            }
+        });
+        if let Some(nvm_dir) = nvm_dir.as_ref() {
+            // Try to find current node version
+            let nvm_current = format!("{}/versions/node", nvm_dir);
+            if std::path::Path::new(&nvm_current).exists() {
+                if let Ok(entries) = std::fs::read_dir(&nvm_current) {
+                    if let Some(Ok(entry)) = entries.into_iter().next() {
+                        path_parts.push(format!("{}/bin", entry.path().display()));
+                    }
+                }
+            }
         }
+
+        // Common system install locations
+        path_parts.push("/usr/local/bin".to_string());
+        path_parts.push("/usr/bin".to_string());
+        path_parts.push("/bin".to_string());
+        path_parts.push("/opt/homebrew/bin".to_string());
+        path_parts.push("/opt/homebrew/sbin".to_string());
+
+        // Existing PATH
+        if let Ok(existing_path) = std::env::var("PATH") {
+            path_parts.push(existing_path);
+        }
+
+        cmd.env("PATH", path_parts.join(":"));
         cmd.env("HOME", &home);
         cmd.env("TERM", "xterm-256color");
         if let Ok(shell) = std::env::var("SHELL") {
             cmd.env("SHELL", shell);
+        }
+        // Pass NVM_DIR if set for nvm-managed node
+        if let Some(nvm_dir) = nvm_dir {
+            cmd.env("NVM_DIR", nvm_dir);
         }
 
         tracing::info!("Starting {} in {}", cli_type.display_name(), project_path);
@@ -439,6 +543,10 @@ impl SessionManager {
         // Channel for signaling user input to the parser
         let (user_input_tx, mut user_input_rx) = mpsc::channel::<()>(16);
 
+        // Ring buffer for PTY output history - allows new subscribers to see recent terminal output
+        let output_history: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::with_capacity(OUTPUT_HISTORY_SIZE)));
+        let output_history_for_reader = output_history.clone();
+
         // Clone writer for reader task to use for auto-accept
         let writer_for_reader = writer.clone();
 
@@ -446,16 +554,20 @@ impl SessionManager {
         let app_for_watcher = app.clone();
         let project_path_for_watcher = project_path.clone();
         let conversation_id_for_watcher = conversation_id.clone();
+        let capture_dir = std::env::var("MOBILECLI_PTY_CAPTURE_DIR").ok();
 
         // Spawn task to read PTY output
         let session_id_clone = session_id.clone();
         let cli_type_for_parser = cli_type; // Copy for the spawned task
+        let capture_dir_for_reader = capture_dir.clone();
         let reader_task = tokio::task::spawn_blocking(move || {
             let mut parser = OutputParser::new(cli_type_for_parser);
             let mut buffer = [0u8; 4096];
             let mut conversation_id_found = false;
             // Track if we've already auto-accepted trust prompt to prevent duplicate sends
             let mut trust_prompt_accepted = false;
+            let respond_to_dsr = cli_type_for_parser == CliType::Codex;
+            let mut dsr_carry: Vec<u8> = Vec::new();
 
             // Helper function to detect trust prompts (should auto-accept)
             // vs tool approval prompts (should show modal to user)
@@ -520,7 +632,59 @@ impl SessionManager {
                 match reader.read(&mut buffer) {
                     Ok(0) => break, // EOF
                     Ok(n) => {
-                        let output = String::from_utf8_lossy(&buffer[..n]);
+                        let mut raw_bytes = buffer[..n].to_vec();
+                        if respond_to_dsr {
+                            const DSR_SEQUENCE: [u8; 4] = [0x1b, b'[', b'6', b'n'];
+                            let mut combined: Vec<u8> = Vec::new();
+                            if !dsr_carry.is_empty() {
+                                combined.extend_from_slice(&dsr_carry);
+                                dsr_carry.clear();
+                            }
+                            combined.extend_from_slice(&raw_bytes);
+
+                            let mut filtered: Vec<u8> = Vec::with_capacity(combined.len());
+                            let mut i = 0;
+                            let mut dsr_count = 0;
+                            while i < combined.len() {
+                                let remaining = combined.len() - i;
+                                if remaining >= 4 && combined[i..i + 4] == DSR_SEQUENCE {
+                                    dsr_count += 1;
+                                    i += 4;
+                                    continue;
+                                }
+                                if remaining < 4 && combined[i] == DSR_SEQUENCE[0] {
+                                    let mut is_prefix = true;
+                                    for j in 0..remaining {
+                                        if combined[i + j] != DSR_SEQUENCE[j] {
+                                            is_prefix = false;
+                                            break;
+                                        }
+                                    }
+                                    if is_prefix {
+                                        dsr_carry.extend_from_slice(&combined[i..]);
+                                        break;
+                                    }
+                                }
+                                filtered.push(combined[i]);
+                                i += 1;
+                            }
+
+                            if dsr_count > 0 {
+                                if let Ok(mut w) = writer_for_reader.lock() {
+                                    for _ in 0..dsr_count {
+                                        let _ = w.write_all(b"\x1b[1;1R");
+                                    }
+                                    let _ = w.flush();
+                                }
+                            }
+
+                            raw_bytes = filtered;
+                            if raw_bytes.is_empty() {
+                                continue;
+                            }
+                        }
+
+                        let output = String::from_utf8_lossy(&raw_bytes);
                         let cleaned = parser.process(&output);
 
                         // Try to extract conversation ID from output
@@ -548,7 +712,7 @@ impl SessionManager {
                         }
 
                         // Get recent context BEFORE check_waiting_for_input, as the check may clear the buffer
-                        let recent_context = parser.get_recent_context(2000);
+                        let recent_context = parser.get_recent_context(4000);
 
                         // INDEPENDENT TRUST PROMPT CHECK: Run on every chunk regardless of debounce
                         // This ensures trust prompts are caught immediately when they appear
@@ -578,12 +742,14 @@ impl SessionManager {
                             tracing::debug!("Session {} is waiting for input", session_id_clone);
                             // Include the recent accumulated output as prompt content so mobile can detect
                             // whether this is a tool approval prompt or general waiting
-                            // Use the context captured before the check (buffer may be cleared during check)
-                            // Fall back to current chunk if context is empty
+                            // IMPORTANT: Combine recent_context with current chunk because
+                            // tool approval options (1. Yes, 2. Yes...) often arrive AFTER
+                            // the prompt pattern ("> ") that triggers waiting detection.
+                            // Without combining, we'd miss the approval patterns.
                             let prompt_content = if recent_context.is_empty() {
                                 cleaned.clone()
                             } else {
-                                recent_context.clone()
+                                format!("{}\n{}", recent_context, cleaned)
                             };
 
                             let prompt_lower = prompt_content.to_lowercase();
@@ -657,6 +823,13 @@ impl SessionManager {
                             // so mobile can show the appropriate UI
                             // Skip this emit if we just auto-accepted a trust prompt
                             if !trust_prompt_handled {
+                                maybe_write_pty_snapshot(
+                                    &capture_dir_for_reader,
+                                    cli_type_for_parser,
+                                    &session_id_clone,
+                                    &prompt_content,
+                                    &output_history_for_reader,
+                                );
                                 let _ = app.emit(
                                     "waiting-for-input",
                                     serde_json::json!({
@@ -664,6 +837,7 @@ impl SessionManager {
                                         "timestamp": chrono::Utc::now().to_rfc3339(),
                                         "promptContent": prompt_content,
                                         "waitType": wait_type,
+                                        "cliType": cli_type_for_parser.as_str(),
                                     }),
                                 );
                             }
@@ -675,9 +849,9 @@ impl SessionManager {
                             serde_json::json!({
                                 "sessionId": session_id_clone,
                                 "output": cleaned,
-                                "raw": output,
-                            }),
-                        );
+                            "raw": output,
+                        }),
+                    );
 
                         // Emit raw bytes (base64 encoded) for xterm.js rendering on mobile
                         // This preserves all terminal escape sequences for perfect rendering
@@ -685,9 +859,21 @@ impl SessionManager {
                             "pty-bytes",
                             serde_json::json!({
                                 "sessionId": session_id_clone,
-                                "data": BASE64.encode(&buffer[..n]),
+                                "data": BASE64.encode(&raw_bytes),
                             }),
                         );
+
+                        // Store PTY bytes in history ring buffer for new subscribers
+                        // This allows mobile clients to see recent terminal output when they connect
+                        if let Ok(mut history) = output_history_for_reader.lock() {
+                            // Add new bytes to the buffer
+                            for byte in &raw_bytes {
+                                if history.len() >= OUTPUT_HISTORY_SIZE {
+                                    history.pop_front(); // Remove oldest byte to make room
+                                }
+                                history.push_back(*byte);
+                            }
+                        }
 
                         // THINKING/PROGRESS DETECTION: Extract dynamic status messages for mobile
                         // Claude shows status like "Building core pages...", "Discussing monetization..."
@@ -943,6 +1129,7 @@ impl SessionManager {
                 _kill_tx: kill_tx,
                 user_input_tx,
                 cli_watcher,
+                output_history,
             },
         );
 
@@ -975,16 +1162,6 @@ impl SessionManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| PtyError::SessionNotFound(session_id.to_string()))?;
-
-        // Very detailed logging to debug input issues
-        let input_bytes: Vec<u8> = input.bytes().collect();
-        tracing::info!(
-            "PTY send_input START: session={}, input_str={:?}, input_len={}, input_hex={:02x?}",
-            session_id,
-            input,
-            input.len(),
-            input_bytes
-        );
 
         // Signal the parser that user input was sent
         let _ = session.user_input_tx.try_send(());
@@ -1019,10 +1196,6 @@ impl SessionManager {
                 tracing::error!("PTY send_input: flush error after Ctrl+U: {}", e);
                 return;
             }
-            tracing::info!("PTY send_input: sent Ctrl+U to clear pending input");
-
-            // Small delay to let the terminal process the clear
-            std::thread::sleep(std::time::Duration::from_millis(5));
 
             // Write the entire input string at once
             if let Err(e) = w.write_all(input_owned.as_bytes()) {
@@ -1033,10 +1206,6 @@ impl SessionManager {
                 tracing::error!("PTY send_input: flush error after text: {}", e);
                 return;
             }
-            tracing::info!("PTY send_input: wrote {} text bytes", input_owned.len());
-
-            // Small delay to let the terminal process the input
-            std::thread::sleep(std::time::Duration::from_millis(5));
 
             // Write CR (carriage return) - this is the Enter key
             // This tells the terminal to submit the line
@@ -1048,15 +1217,9 @@ impl SessionManager {
                 tracing::error!("PTY send_input: flush error after CR: {}", e);
                 return;
             }
-            tracing::info!(
-                "PTY send_input: wrote CR and flushed for session {}",
-                session_id_owned
-            );
         })
         .await
         .map_err(|e| PtyError::Pty(format!("spawn_blocking failed: {}", e)))?;
-
-        tracing::info!("PTY send_input COMPLETE: session={}", session_id);
 
         Ok(())
     }
@@ -1076,13 +1239,8 @@ impl SessionManager {
 
         // If input is empty, send Enter key (CR) - used for auto-accept trust prompts
         if input.is_empty() {
-            tracing::info!(
-                "Sending Enter key (CR) to session {} for auto-accept",
-                session_id
-            );
             writer.write_all(b"\r")?;
         } else {
-            tracing::debug!("Sending raw input to session {}: {:?}", session_id, input);
             writer.write_all(input.as_bytes())?;
         }
         writer.flush()?;
@@ -1136,64 +1294,85 @@ impl SessionManager {
         // Load config for CLI-specific settings
         let app_config = config::load_config(&app).unwrap_or_default();
 
-        // Build resume command based on CLI type
-        let cmd = match cli_type {
+        // Build resume command wrapped in shell with "stty -echo" to disable PTY echo.
+        // This prevents input from being echoed back to mobile clients.
+        let shell_cmd = match cli_type {
             CliType::ClaudeCode => {
                 let claude_path = format!("{}/.local/bin/claude", home);
-                let mut cmd = CommandBuilder::new(&claude_path);
-                cmd.arg("--resume");
-                cmd.arg(&conversation_id);
                 // ISSUE #2: Use passed setting if provided, otherwise fall back to config
                 let use_skip_permissions = claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
-                if use_skip_permissions {
-                    cmd.arg("--dangerously-skip-permissions");
+                let skip_perms_flag = if use_skip_permissions {
                     tracing::info!("Claude resume starting with --dangerously-skip-permissions");
-                }
-                cmd.cwd(&project_path);
-                cmd
+                    " --dangerously-skip-permissions"
+                } else {
+                    ""
+                };
+                format!(
+                    "stty -echo; exec '{}' --resume '{}'{}",
+                    claude_path, conversation_id, skip_perms_flag
+                )
             }
             CliType::GeminiCli => {
                 // Gemini uses --resume with session index or "latest"
-                let mut cmd = CommandBuilder::new("gemini");
-                cmd.arg("--resume");
-                cmd.arg(&conversation_id); // This should be an index like "1" or "latest"
-                cmd.cwd(&project_path);
-                cmd
+                format!(
+                    "stty -echo; exec gemini --resume '{}'",
+                    conversation_id
+                )
             }
             CliType::OpenCode => {
                 // OpenCode uses -c flag to continue last session
                 let opencode_path = format!("{}/.opencode/bin/opencode", home);
-                let mut cmd = CommandBuilder::new(&opencode_path);
-                cmd.arg("-c"); // Continue last session
-                cmd.arg(&project_path);
-                cmd
+                format!(
+                    "stty -echo; exec '{}' -c '{}'",
+                    opencode_path, project_path
+                )
             }
             CliType::Codex => {
                 // Codex uses "codex resume [session_id]"
-                let mut cmd = CommandBuilder::new("codex");
-                cmd.arg("resume");
-                cmd.arg(&conversation_id);
-                cmd.arg("-C");
-                cmd.arg(&project_path);
-                // Add approval policy from config
-                cmd.arg("-a");
-                cmd.arg(app_config.codex_approval_policy.as_flag());
                 tracing::info!(
                     "Codex resume starting with approval policy: {}",
                     app_config.codex_approval_policy.as_flag()
                 );
-                cmd
+                format!(
+                    "stty -echo; exec codex resume '{}' -C '{}' -a {}",
+                    conversation_id, project_path, app_config.codex_approval_policy.as_flag()
+                )
             }
         };
 
-        let mut cmd = cmd;
-        if let Ok(path) = std::env::var("PATH") {
-            cmd.env("PATH", path);
+        // Wrap in bash login shell to ensure PATH includes user's installed CLIs
+        let mut cmd = CommandBuilder::new("/bin/bash");
+        cmd.arg("-l"); // Login shell - sources profile for PATH
+        cmd.arg("-c");
+        cmd.arg(&shell_cmd);
+        cmd.cwd(&project_path);
+
+        // Build extended PATH that includes common CLI installation locations
+        let mut path_parts: Vec<String> = Vec::new();
+        path_parts.push(format!("{}/.local/bin", home));
+        path_parts.push(format!("{}/.npm-global/bin", home));
+        path_parts.push(format!("{}/node_modules/.bin", home));
+        if let Ok(nvm_dir) = std::env::var("NVM_DIR") {
+            let nvm_current = format!("{}/versions/node", nvm_dir);
+            if std::path::Path::new(&nvm_current).exists() {
+                if let Ok(entries) = std::fs::read_dir(&nvm_current) {
+                    if let Some(Ok(entry)) = entries.into_iter().next() {
+                        path_parts.push(format!("{}/bin", entry.path().display()));
+                    }
+                }
+            }
         }
+        if let Ok(existing_path) = std::env::var("PATH") {
+            path_parts.push(existing_path);
+        }
+        cmd.env("PATH", path_parts.join(":"));
         cmd.env("HOME", &home);
         cmd.env("TERM", "xterm-256color");
         if let Ok(shell) = std::env::var("SHELL") {
             cmd.env("SHELL", shell);
+        }
+        if let Ok(nvm_dir) = std::env::var("NVM_DIR") {
+            cmd.env("NVM_DIR", nvm_dir);
         }
 
         tracing::info!(
@@ -1226,6 +1405,10 @@ impl SessionManager {
         // Channel for signaling user input to the parser
         let (user_input_tx, mut user_input_rx) = mpsc::channel::<()>(16);
 
+        // Ring buffer for PTY output history - allows new subscribers to see recent terminal output
+        let output_history: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::with_capacity(OUTPUT_HISTORY_SIZE)));
+        let output_history_for_reader = output_history.clone();
+
         // Clone writer for reader task to use for auto-accept
         let writer_for_reader = writer.clone();
 
@@ -1233,14 +1416,18 @@ impl SessionManager {
         let app_for_watcher = app.clone();
         let project_path_for_watcher = project_path.clone();
         let conversation_id_for_watcher = conversation_id.clone();
+        let capture_dir = std::env::var("MOBILECLI_PTY_CAPTURE_DIR").ok();
 
         let session_id_clone = session_id.clone();
         let cli_type_for_parser = cli_type; // Copy for the spawned task
+        let capture_dir_for_reader = capture_dir.clone();
         let reader_task = tokio::task::spawn_blocking(move || {
             let mut parser = OutputParser::new(cli_type_for_parser);
             let mut buffer = [0u8; 4096];
             // Track if we've already auto-accepted trust prompt to prevent duplicate sends
             let mut trust_prompt_accepted = false;
+            let respond_to_dsr = cli_type_for_parser == CliType::Codex;
+            let mut dsr_carry: Vec<u8> = Vec::new();
 
             // Helper function to detect trust prompts (should auto-accept)
             // vs tool approval prompts (should show modal to user)
@@ -1305,11 +1492,63 @@ impl SessionManager {
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let output = String::from_utf8_lossy(&buffer[..n]);
+                        let mut raw_bytes = buffer[..n].to_vec();
+                        if respond_to_dsr {
+                            const DSR_SEQUENCE: [u8; 4] = [0x1b, b'[', b'6', b'n'];
+                            let mut combined: Vec<u8> = Vec::new();
+                            if !dsr_carry.is_empty() {
+                                combined.extend_from_slice(&dsr_carry);
+                                dsr_carry.clear();
+                            }
+                            combined.extend_from_slice(&raw_bytes);
+
+                            let mut filtered: Vec<u8> = Vec::with_capacity(combined.len());
+                            let mut i = 0;
+                            let mut dsr_count = 0;
+                            while i < combined.len() {
+                                let remaining = combined.len() - i;
+                                if remaining >= 4 && combined[i..i + 4] == DSR_SEQUENCE {
+                                    dsr_count += 1;
+                                    i += 4;
+                                    continue;
+                                }
+                                if remaining < 4 && combined[i] == DSR_SEQUENCE[0] {
+                                    let mut is_prefix = true;
+                                    for j in 0..remaining {
+                                        if combined[i + j] != DSR_SEQUENCE[j] {
+                                            is_prefix = false;
+                                            break;
+                                        }
+                                    }
+                                    if is_prefix {
+                                        dsr_carry.extend_from_slice(&combined[i..]);
+                                        break;
+                                    }
+                                }
+                                filtered.push(combined[i]);
+                                i += 1;
+                            }
+
+                            if dsr_count > 0 {
+                                if let Ok(mut w) = writer_for_reader.lock() {
+                                    for _ in 0..dsr_count {
+                                        let _ = w.write_all(b"\x1b[1;1R");
+                                    }
+                                    let _ = w.flush();
+                                }
+                            }
+
+                            raw_bytes = filtered;
+                            if raw_bytes.is_empty() {
+                                continue;
+                            }
+                        }
+
+                        let output = String::from_utf8_lossy(&raw_bytes);
                         let cleaned = parser.process(&output);
 
                         // Get recent context BEFORE check_waiting_for_input, as the check may clear the buffer
-                        let recent_context = parser.get_recent_context(2000);
+                        let recent_context = parser.get_recent_context(4000);
 
                         // INDEPENDENT TRUST PROMPT CHECK: Run on every chunk regardless of debounce
                         // This ensures trust prompts are caught immediately when they appear
@@ -1342,12 +1581,14 @@ impl SessionManager {
                             );
                             // Include the recent accumulated output as prompt content so mobile can detect
                             // whether this is a tool approval prompt or general waiting
-                            // Use the context captured before the check (buffer may be cleared during check)
-                            // Fall back to current chunk if context is empty
+                            // IMPORTANT: Combine recent_context with current chunk because
+                            // tool approval options (1. Yes, 2. Yes...) often arrive AFTER
+                            // the prompt pattern ("> ") that triggers waiting detection.
+                            // Without combining, we'd miss the approval patterns.
                             let prompt_content = if recent_context.is_empty() {
                                 cleaned.clone()
                             } else {
-                                recent_context.clone()
+                                format!("{}\n{}", recent_context, cleaned)
                             };
 
                             let prompt_lower = prompt_content.to_lowercase();
@@ -1417,6 +1658,13 @@ impl SessionManager {
                             }
 
                             // For non-trust prompts (tool approvals, etc), emit the event
+                            maybe_write_pty_snapshot(
+                                &capture_dir_for_reader,
+                                cli_type_for_parser,
+                                &session_id_clone,
+                                &prompt_content,
+                                &output_history_for_reader,
+                            );
                             let _ = app.emit(
                                 "waiting-for-input",
                                 serde_json::json!({
@@ -1424,6 +1672,7 @@ impl SessionManager {
                                     "timestamp": chrono::Utc::now().to_rfc3339(),
                                     "promptContent": prompt_content,
                                     "waitType": wait_type,
+                                    "cliType": cli_type_for_parser.as_str(),
                                 }),
                             );
                         }
@@ -1433,20 +1682,32 @@ impl SessionManager {
                             "pty-output",
                             serde_json::json!({
                                 "sessionId": session_id_clone,
-                                "output": cleaned,
-                                "raw": output,
-                            }),
-                        );
+                            "output": cleaned,
+                            "raw": output,
+                        }),
+                    );
 
                         // Emit raw bytes (base64 encoded) for xterm.js rendering on mobile
                         // This preserves all terminal escape sequences for perfect rendering
                         let _ = app.emit(
                             "pty-bytes",
                             serde_json::json!({
-                                "sessionId": session_id_clone,
-                                "data": BASE64.encode(&buffer[..n]),
-                            }),
-                        );
+                            "sessionId": session_id_clone,
+                            "data": BASE64.encode(&raw_bytes),
+                        }),
+                    );
+
+                        // Store PTY bytes in history ring buffer for new subscribers
+                        // This allows mobile clients to see recent terminal output when they connect
+                        if let Ok(mut history) = output_history_for_reader.lock() {
+                            // Add new bytes to the buffer
+                            for byte in &raw_bytes {
+                                if history.len() >= OUTPUT_HISTORY_SIZE {
+                                    history.pop_front(); // Remove oldest byte to make room
+                                }
+                                history.push_back(*byte);
+                            }
+                        }
 
                         // THINKING/PROGRESS DETECTION: Extract dynamic status messages for mobile
                         // Claude shows status like "Building core pages...", "Discussing monetization..."
@@ -1608,10 +1869,18 @@ impl SessionManager {
                 _kill_tx: kill_tx,
                 user_input_tx,
                 cli_watcher,
+                output_history,
             },
         );
 
         Ok(())
+    }
+
+    /// Get the output history for a session (for sending to new subscribers)
+    pub fn get_output_history(&self, session_id: &str) -> Option<Vec<u8>> {
+        let session = self.sessions.get(session_id)?;
+        let history = session.output_history.lock().ok()?;
+        Some(history.iter().copied().collect())
     }
 }
 
