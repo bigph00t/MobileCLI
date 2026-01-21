@@ -38,14 +38,11 @@ Download: https://mobilecli.app/download
 ## Repo layout
 
 - desktop/ - Tauri desktop host/client app.
-- mobile/ - Expo mobile client.
-- website/ - Marketing site.
 - shared/ - Shared types and helpers.
-- relay/ - Legacy relay service (not used in production).
+
+The mobile app and website live in separate repos.
 
 ## Development
-
-### Desktop
 
 Prereqs: Node.js 18+, Rust 1.70+, Tauri CLI 2.0
 
@@ -53,16 +50,6 @@ Prereqs: Node.js 18+, Rust 1.70+, Tauri CLI 2.0
 cd desktop
 npm install
 npm run tauri dev
-```
-
-### Mobile
-
-Prereqs: Node.js 18+, Expo CLI
-
-```bash
-cd mobile
-npm install
-npm run start
 ```
 
 ## License
