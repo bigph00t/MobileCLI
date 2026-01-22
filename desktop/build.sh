@@ -17,7 +17,11 @@ echo ""
 npx tauri build
 
 echo ""
+VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
 echo "Build complete! Bundles available at:"
-echo "  - AppImage: src-tauri/target/release/bundle/appimage/MobileCLI_0.1.0_amd64.AppImage"
-echo "  - DEB:      src-tauri/target/release/bundle/deb/MobileCLI_0.1.0_amd64.deb"
-echo "  - RPM:      src-tauri/target/release/bundle/rpm/MobileCLI-0.1.0-1.x86_64.rpm"
+echo "  - macOS:   src-tauri/target/release/bundle/dmg/"
+echo "  - Windows: src-tauri/target/release/bundle/nsis/"
+echo "  - Linux:   src-tauri/target/release/bundle/deb/ and appimage/"
+echo ""
+echo "Version: $VERSION"
