@@ -75,10 +75,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           Get-ChildItem -Path "desktop\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*.exe" | ForEach-Object {
-            Move-Item $_.FullName "desktop\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\MobileCLI_${{ env:suffix }}.exe"
+            Move-Item $_.FullName "desktop\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\MobileCLI_${{ matrix.suffix }}.exe"
           }
-        env:
-          suffix: ${{ matrix.suffix }}
 
       - name: Rename artifacts (Linux)
         if: matrix.os == 'ubuntu-22.04'
@@ -145,5 +143,11 @@ jobs:
             artifacts/**/*.AppImage
 
       - name: Trigger Vercel deploy
-        if: ${{ secrets.VERCEL_DEPLOY_HOOK_URL != '' }}
-        run: curl -fsSL -X POST "${{ secrets.VERCEL_DEPLOY_HOOK_URL }}"
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$VERCEL_DEPLOY_HOOK_URL" ]; then
+            curl -fsSL -X POST "$VERCEL_DEPLOY_HOOK_URL"
+          else
+            echo "VERCEL_DEPLOY_HOOK_URL not set; skipping deploy hook."
+          fi
