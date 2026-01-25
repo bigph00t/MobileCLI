@@ -75,7 +75,7 @@ export function getUserFriendlyError(error: string | Error): string {
  * Log error with context for debugging
  */
 export function logError(context: string, error: unknown): void {
-  if (process.env.NODE_ENV === 'development') {
+  if (import.meta.env.DEV) {
     console.error(`[${context}]`, error);
   }
 }

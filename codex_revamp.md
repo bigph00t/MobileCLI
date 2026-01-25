@@ -18,3 +18,4 @@
 - Added settings toggle to hide session icons when sidebar is collapsed; wired Sidebar to honor it.
 - Updated desktop shortcut at `/home/bigphoot/Desktop/mobilecli.desktop` to launch the new release binary.
 - Provided Vercel deploy hook setup guidance (hook URL stored as `VERCEL_DEPLOY_HOOK_URL` secret in desktop repo).
+- Fixed CI TypeScript failures by replacing process.env usage with import.meta.env and adding Vite env types.
