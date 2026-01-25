@@ -12,3 +12,5 @@
 - Hardened conversation ID tracking: parser now only extracts IDs from lines mentioning session/conversation ID.
 - Only store generated conversation IDs for Claude sessions; other CLIs now update IDs from actual watcher file paths (Codex/Gemini/OpenCode) and emit conversation-id events.
 - Prevented Claude sessions from overriding conversation IDs via parser output to avoid resume failures.
+- Attempted desktop build via `desktop/build.sh`; Linux bundle failed at linuxdeploy (binary not runnable in this environment). Frontend + Rust build completed; AppImage/DEB bundling hit linuxdeploy failure.
+- Pushed desktop repo changes to `bigph00t/MobileCLI` and website repo to `bigph00t/MobileCLI-website` for release-based downloads.
