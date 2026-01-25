@@ -24,7 +24,7 @@ use input_coordinator::InputCoordinator;
 use pty::SessionManager;
 use relay::RelayState;
 use std::sync::Arc;
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::{Mutex, RwLock};
 
 // Application state shared across commands
@@ -1183,6 +1183,22 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let label = format!("window-{}", uuid::Uuid::new_v4());
+            let window = WebviewWindowBuilder::new(
+                app,
+                label,
+                WebviewUrl::App("index.html".into()),
+            )
+            .title("MobileCLI")
+            .build();
+
+            if window.is_err() {
+                if let Some(existing) = app.get_webview_window("main") {
+                    let _ = existing.set_focus();
+                }
+            }
+        }))
         .setup(|app| {
             // Initialize database
             let app_data_dir = app.path().app_data_dir().expect("Failed to get app data dir");

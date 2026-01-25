@@ -47,6 +47,10 @@ export default function Sidebar({
   const { createSession, resumeSession, closeSession, renameSession, deleteSession, fetchAvailableClis, availableClis, waitingStates, inputStates } = useSessionStore();
   const [isCreating, setIsCreating] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [showCollapsedIcons, setShowCollapsedIcons] = useState(() => {
+    const saved = localStorage.getItem('sidebarShowCollapsedIcons');
+    return saved !== 'false';
+  });
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   // ISSUE #1: Create folder modal state
@@ -74,6 +78,19 @@ export default function Sidebar({
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [contextMenu]);
+
+  useEffect(() => {
+    const handleToggle = (event: Event) => {
+      const detail = (event as CustomEvent<boolean>).detail;
+      if (typeof detail === 'boolean') {
+        setShowCollapsedIcons(detail);
+      }
+    };
+    window.addEventListener('sidebar-collapsed-icons', handleToggle as EventListener);
+    return () => {
+      window.removeEventListener('sidebar-collapsed-icons', handleToggle as EventListener);
+    };
+  }, []);
 
   // Handle context menu actions
   const handleCloseSession = async () => {
@@ -342,6 +359,7 @@ export default function Sidebar({
                 onClick={() => onSelectSession(session.id)}
                 onContextMenu={handleContextMenu}
                 isCollapsed={isCollapsed}
+                showCollapsedIcons={showCollapsedIcons}
                 waitingState={waitingStates[session.id]}
                 inputState={inputStates[session.id]} // ISSUE #5: Pass input state for typing indicator
                 isHistory={false}
@@ -367,6 +385,7 @@ export default function Sidebar({
                 onResume={session.conversationId ? () => resumeSession(session.id) : undefined}
                 onContextMenu={handleContextMenu}
                 isCollapsed={isCollapsed}
+                showCollapsedIcons={showCollapsedIcons}
                 isHistory={true}
               />
             ))}
@@ -623,12 +642,13 @@ interface SessionItemProps {
   onResume?: () => void;
   onContextMenu?: (e: React.MouseEvent, session: Session) => void;
   isCollapsed?: boolean;
+  showCollapsedIcons?: boolean;
   waitingState?: WaitingState;
   inputState?: InputState; // ISSUE #5: For "User typing" indicator
   isHistory?: boolean;
 }
 
-function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCollapsed, waitingState, inputState, isHistory }: SessionItemProps) {
+function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCollapsed, showCollapsedIcons, waitingState, inputState, isHistory }: SessionItemProps) {
   const [isResuming, setIsResuming] = useState(false);
 
   // ISSUE #5: Check if user is typing (input buffer has content)
@@ -698,6 +718,9 @@ function SessionItem({ session, isActive, onClick, onResume, onContextMenu, isCo
   };
 
   if (isCollapsed) {
+    if (showCollapsedIcons === false) {
+      return null;
+    }
     return (
       <div
         onClick={onClick}

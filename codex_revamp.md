@@ -14,3 +14,5 @@
 - Prevented Claude sessions from overriding conversation IDs via parser output to avoid resume failures.
 - Attempted desktop build via `desktop/build.sh`; Linux bundle failed at linuxdeploy (binary not runnable in this environment). Frontend + Rust build completed; AppImage/DEB bundling hit linuxdeploy failure.
 - Pushed desktop repo changes to `bigph00t/MobileCLI` and website repo to `bigph00t/MobileCLI-website` for release-based downloads.
+- Added single-instance desktop handling to open a new window when a second instance launches (shared PTY/state).
+- Added settings toggle to hide session icons when sidebar is collapsed; wired Sidebar to honor it.

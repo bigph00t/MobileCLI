@@ -35,6 +35,10 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<'general' | 'connectivity'>('general');
   const [connectionMethod, setConnectionMethod] = useState<'local' | 'tailscale'>('local');
   const [terminalTheme, setCurrentTerminalTheme] = useState<TerminalThemeName>(getCurrentTerminalTheme());
+  const [showCollapsedIcons, setShowCollapsedIcons] = useState(() => {
+    const saved = localStorage.getItem('sidebarShowCollapsedIcons');
+    return saved !== 'false';
+  });
   const [tailscale, setTailscale] = useState<TailscaleStatus | null>(null);
   const { availableClis, fetchAvailableClis } = useSessionStore();
 
@@ -118,6 +122,12 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const handleThemeChange = (theme: TerminalThemeName) => {
     setTerminalTheme(theme);
     setCurrentTerminalTheme(theme);
+  };
+
+  const handleCollapsedIconsChange = (enabled: boolean) => {
+    setShowCollapsedIcons(enabled);
+    localStorage.setItem('sidebarShowCollapsedIcons', enabled ? 'true' : 'false');
+    window.dispatchEvent(new CustomEvent('sidebar-collapsed-icons', { detail: enabled }));
   };
 
   const wsUrl = `ws://${localIp}:${wsPort}`;
@@ -300,6 +310,25 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </span>
                   </button>
                 </div>
+              </div>
+
+              {/* Sidebar Preferences */}
+              <div className="mb-6">
+                <h3 className="text-sm font-medium text-[#c0caf5] mb-2">
+                  Sidebar
+                </h3>
+                <p className="text-xs text-[#565f89] mb-3">
+                  Control how the sidebar behaves when collapsed
+                </p>
+                <label className="flex items-center gap-3 text-sm text-[#c0caf5]">
+                  <input
+                    type="checkbox"
+                    checked={showCollapsedIcons}
+                    onChange={(e) => handleCollapsedIconsChange(e.target.checked)}
+                    className="h-4 w-4 rounded border-[#414868] bg-[#1a1b26] text-[#7aa2f7] focus:ring-[#7aa2f7]"
+                  />
+                  Show session icons when sidebar is collapsed
+                </label>
               </div>
 
               {/* Theme Info */}
