@@ -57,6 +57,7 @@ npm-debug.log*
 .playwright-mcp/
 thoughts/
 screenshots/
+promo-video/
 
 # Development notes (not for public repo)
 *-RalphPlan.md

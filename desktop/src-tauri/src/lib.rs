@@ -56,6 +56,20 @@ fn derive_session_name(project_path: &str) -> String {
         .unwrap_or_else(|| format!("Session {}", chrono::Utc::now().format("%H:%M:%S")))
 }
 
+fn resolve_home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .or_else(|_| {
+            let drive = std::env::var("HOMEDRIVE").ok();
+            let path = std::env::var("HOMEPATH").ok();
+            match (drive, path) {
+                (Some(drive), Some(path)) => Ok(format!("{}{}", drive, path)),
+                _ => Err(std::env::VarError::NotPresent),
+            }
+        })
+        .unwrap_or_else(|_| ".".to_string())
+}
+
 // Tauri commands exposed to frontend
 mod commands {
     use super::*;
@@ -193,11 +207,44 @@ mod commands {
     #[tauri::command]
     pub async fn get_available_clis() -> Result<Vec<CliInfo>, String> {
         use std::process::Command;
-        use std::path::Path;
+        use std::path::{Path, PathBuf};
 
         // Check if command is installed using multiple methods for cross-platform support
         let check_installed = |cmd: &str| -> bool {
-            let home = std::env::var("HOME").unwrap_or_default();
+            let home = resolve_home_dir();
+
+            if cfg!(windows) {
+                let mut search_dirs: Vec<PathBuf> = Vec::new();
+                if !home.is_empty() {
+                    search_dirs.push(Path::new(&home).join("AppData").join("Roaming").join("npm"));
+                    search_dirs.push(Path::new(&home).join(".npm-global").join("bin"));
+                    search_dirs.push(Path::new(&home).join(".yarn").join("bin"));
+                    search_dirs.push(Path::new(&home).join(".bun").join("bin"));
+                    search_dirs.push(Path::new(&home).join("scoop").join("shims"));
+                }
+
+                if let Ok(path_env) = std::env::var("PATH") {
+                    for entry in path_env.split(';') {
+                        if !entry.trim().is_empty() {
+                            search_dirs.push(PathBuf::from(entry));
+                        }
+                    }
+                }
+
+                let extensions = ["", ".exe", ".cmd", ".bat"];
+                for dir in search_dirs {
+                    for ext in extensions {
+                        let candidate = dir.join(format!("{}{}", cmd, ext));
+                        if candidate.exists() {
+                            tracing::debug!("Found {} at path: {}", cmd, candidate.display());
+                            return true;
+                        }
+                    }
+                }
+
+                tracing::debug!("CLI {} not found on PATH (Windows check)", cmd);
+                return false;
+            }
 
             // Method 1: Check common installation paths directly (fastest, most reliable)
             let common_paths = [
@@ -455,6 +502,32 @@ mod commands {
         // Stop PTY process
         let mut manager = state.session_manager.write().await;
         manager.stop_session(&session_id).await;
+
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn rename_session(
+        state: tauri::State<'_, AppState>,
+        app: tauri::AppHandle,
+        session_id: String,
+        new_name: String,
+    ) -> Result<(), String> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err("Session name cannot be empty".to_string());
+        }
+        let name = trimmed.to_string();
+
+        state
+            .db
+            .rename_session(&session_id, &name)
+            .map_err(|e| e.to_string())?;
+
+        let _ = app.emit(
+            "session-renamed",
+            serde_json::json!({ "sessionId": session_id, "newName": name }),
+        );
 
         Ok(())
     }
@@ -1669,6 +1742,7 @@ pub fn run() {
             commands::send_tool_approval,
             commands::resize_pty,
             commands::close_session,
+            commands::rename_session,
             commands::delete_session,
             commands::create_directory,
             commands::get_messages,

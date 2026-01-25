@@ -451,23 +451,38 @@ impl OutputParser {
         }
     }
 
-    /// Try to extract conversation ID from output
+    /// Try to extract conversation ID from output.
+    ///
+    /// Only accepts UUIDs that appear on lines mentioning "session id" or "conversation id"
+    /// to avoid accidentally capturing unrelated UUIDs in tool output.
     pub fn extract_conversation_id(&mut self, text: &str) -> Option<String> {
-        // Already found a conversation ID
         if self.conversation_id.is_some() {
             return self.conversation_id.clone();
         }
 
-        // UUID pattern (8-4-4-4-12 hex chars)
         let uuid_regex =
             regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
                 .ok()?;
 
-        if let Some(cap) = uuid_regex.find(text) {
-            let id = cap.as_str().to_string();
-            self.conversation_id = Some(id.clone());
-            tracing::debug!("Extracted conversation ID: {}", id);
-            return Some(id);
+        let mut candidates: Vec<&str> = Vec::new();
+        for line in text.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("conversation id")
+                || lower.contains("session id")
+                || lower.contains("conversation-id")
+                || lower.contains("session-id")
+            {
+                candidates.push(line);
+            }
+        }
+
+        for line in candidates {
+            if let Some(cap) = uuid_regex.find(line) {
+                let id = cap.as_str().to_string();
+                self.conversation_id = Some(id.clone());
+                tracing::debug!("Extracted conversation ID: {}", id);
+                return Some(id);
+            }
         }
 
         None

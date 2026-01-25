@@ -14,7 +14,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -61,6 +61,419 @@ pub enum PtyError {
 /// Size of PTY output history buffer in bytes (32KB)
 /// This allows mobile clients to receive recent output when subscribing to an existing session
 const OUTPUT_HISTORY_SIZE: usize = 32 * 1024;
+
+fn resolve_home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .or_else(|_| {
+            let drive = std::env::var("HOMEDRIVE").ok();
+            let path = std::env::var("HOMEPATH").ok();
+            match (drive, path) {
+                (Some(drive), Some(path)) => Ok(format!("{}{}", drive, path)),
+                _ => Err(std::env::VarError::NotPresent),
+            }
+        })
+        .unwrap_or_else(|_| ".".to_string())
+}
+
+fn expand_tilde(path: &str, home: &str) -> String {
+    if home.is_empty() {
+        return path.to_string();
+    }
+    if path == "~" {
+        return home.to_string();
+    }
+    if path.starts_with("~/") || path.starts_with("~\\") {
+        let trimmed = path[2..].trim_start_matches(['/', '\\']);
+        let mut expanded = home.to_string();
+        if !expanded.ends_with(std::path::MAIN_SEPARATOR) {
+            expanded.push(std::path::MAIN_SEPARATOR);
+        }
+        expanded.push_str(trimmed);
+        return expanded;
+    }
+    path.to_string()
+}
+
+fn resolve_project_dir(raw_path: &str, home: &str) -> Result<PathBuf, PtyError> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return Err(PtyError::Pty("Project path is empty".to_string()));
+    }
+
+    let expanded = expand_tilde(trimmed, home);
+    let mut path = PathBuf::from(expanded);
+    if !path.is_absolute() {
+        let cwd = std::env::current_dir().map_err(|e| {
+            PtyError::Pty(format!("Failed to resolve current directory: {}", e))
+        })?;
+        path = cwd.join(path);
+    }
+
+    if !path.exists() {
+        fs::create_dir_all(&path).map_err(|e| {
+            PtyError::Pty(format!(
+                "Failed to create project directory {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+    }
+
+    if !path.is_dir() {
+        return Err(PtyError::Pty(format!(
+            "Project path is not a directory: {}",
+            path.display()
+        )));
+    }
+
+    Ok(path)
+}
+
+fn resolve_cli_binary(cli_type: CliType, home: &str) -> String {
+    let home_path = Path::new(home);
+
+    // Helper to find first existing path from candidates
+    let find_binary = |candidates: &[PathBuf], fallback: &str| -> String {
+        for candidate in candidates {
+            if candidate.exists() && candidate.is_file() {
+                tracing::debug!("Resolved {} to: {}", fallback, candidate.display());
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+        // Fall back to command name (relies on PATH in shell)
+        tracing::debug!("Using PATH fallback for: {}", fallback);
+        fallback.to_string()
+    };
+
+    match cli_type {
+        CliType::ClaudeCode => {
+            let candidates = vec![
+                // Check common installation paths in order of preference
+                home_path.join(".local").join("bin").join("claude"),
+                home_path.join(".npm-global").join("bin").join("claude"),
+                home_path.join(".yarn").join("bin").join("claude"),
+                home_path.join(".bun").join("bin").join("claude"),
+                PathBuf::from("/usr/local/bin/claude"),
+                PathBuf::from("/usr/bin/claude"),
+                PathBuf::from("/opt/homebrew/bin/claude"),
+            ];
+            find_binary(&candidates, "claude")
+        }
+        CliType::OpenCode => {
+            let candidates = vec![
+                home_path.join(".opencode").join("bin").join("opencode"),
+                home_path.join(".local").join("bin").join("opencode"),
+                PathBuf::from("/usr/local/bin/opencode"),
+                PathBuf::from("/usr/bin/opencode"),
+            ];
+            find_binary(&candidates, "opencode")
+        }
+        CliType::GeminiCli => {
+            let candidates = vec![
+                home_path.join(".local").join("bin").join("gemini"),
+                PathBuf::from("/usr/local/bin/gemini"),
+                PathBuf::from("/usr/bin/gemini"),
+            ];
+            find_binary(&candidates, "gemini")
+        }
+        CliType::Codex => {
+            let candidates = vec![
+                home_path.join(".local").join("bin").join("codex"),
+                home_path.join(".npm-global").join("bin").join("codex"),
+                PathBuf::from("/usr/local/bin/codex"),
+                PathBuf::from("/usr/bin/codex"),
+            ];
+            find_binary(&candidates, "codex")
+        }
+    }
+}
+
+struct CliCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+fn build_cli_command_for_start(
+    cli_type: CliType,
+    project_path: &str,
+    conversation_id: &str,
+    skip_permissions: bool,
+    codex_policy_flag: &str,
+    home: &str,
+) -> CliCommand {
+    match cli_type {
+        CliType::ClaudeCode => {
+            let mut args = vec!["--session-id".to_string(), conversation_id.to_string()];
+            if skip_permissions {
+                args.push("--dangerously-skip-permissions".to_string());
+            }
+            CliCommand {
+                program: resolve_cli_binary(cli_type, home),
+                args,
+            }
+        }
+        CliType::GeminiCli => CliCommand {
+            program: resolve_cli_binary(cli_type, home),
+            args: Vec::new(),
+        },
+        CliType::OpenCode => CliCommand {
+            program: resolve_cli_binary(cli_type, home),
+            args: vec![project_path.to_string()],
+        },
+        CliType::Codex => CliCommand {
+            program: resolve_cli_binary(cli_type, home),
+            args: vec![
+                "-C".to_string(),
+                project_path.to_string(),
+                "-a".to_string(),
+                codex_policy_flag.to_string(),
+            ],
+        },
+    }
+}
+
+fn build_cli_command_for_resume(
+    cli_type: CliType,
+    project_path: &str,
+    conversation_id: &str,
+    skip_permissions: bool,
+    codex_policy_flag: &str,
+    home: &str,
+) -> CliCommand {
+    match cli_type {
+        CliType::ClaudeCode => {
+            let mut args = vec!["--resume".to_string(), conversation_id.to_string()];
+            if skip_permissions {
+                args.push("--dangerously-skip-permissions".to_string());
+            }
+            CliCommand {
+                program: resolve_cli_binary(cli_type, home),
+                args,
+            }
+        }
+        CliType::GeminiCli => CliCommand {
+            program: resolve_cli_binary(cli_type, home),
+            args: vec!["--resume".to_string(), conversation_id.to_string()],
+        },
+        CliType::OpenCode => CliCommand {
+            program: resolve_cli_binary(cli_type, home),
+            args: vec!["-c".to_string(), project_path.to_string()],
+        },
+        CliType::Codex => CliCommand {
+            program: resolve_cli_binary(cli_type, home),
+            args: vec![
+                "resume".to_string(),
+                conversation_id.to_string(),
+                "-C".to_string(),
+                project_path.to_string(),
+                "-a".to_string(),
+                codex_policy_flag.to_string(),
+            ],
+        },
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_escape(value: &str) -> String {
+    let mut out = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[cfg(not(windows))]
+fn build_shell_command(cli_cmd: &CliCommand) -> String {
+    let mut parts = Vec::with_capacity(cli_cmd.args.len() + 1);
+    parts.push(shell_escape(&cli_cmd.program));
+    for arg in &cli_cmd.args {
+        parts.push(shell_escape(arg));
+    }
+    let command = parts.join(" ");
+    format!("stty -echo; exec {}", command)
+}
+
+#[cfg(not(windows))]
+fn resolve_shell_path() -> String {
+    if let Ok(shell) = std::env::var("SHELL") {
+        if Path::new(&shell).exists() {
+            return shell;
+        }
+    }
+
+    for candidate in ["/bin/bash", "/bin/zsh", "/usr/bin/bash", "/usr/bin/zsh", "/bin/sh"] {
+        if Path::new(candidate).exists() {
+            return candidate.to_string();
+        }
+    }
+
+    "/bin/sh".to_string()
+}
+
+fn find_nvm_dir(home: &str) -> Option<String> {
+    if let Ok(nvm_dir) = std::env::var("NVM_DIR") {
+        return Some(nvm_dir);
+    }
+
+    let candidate = Path::new(home).join(".nvm");
+    if candidate.exists() {
+        Some(candidate.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+fn append_nvm_path(path_parts: &mut Vec<String>, nvm_dir: &str) {
+    let nvm_current = Path::new(nvm_dir).join("versions").join("node");
+    if !nvm_current.exists() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(&nvm_current) {
+        if let Some(Ok(entry)) = entries.into_iter().next() {
+            path_parts.push(entry.path().join("bin").to_string_lossy().to_string());
+        }
+    }
+}
+
+fn configure_command_env(cmd: &mut CommandBuilder, home: &str) {
+    let mut path_parts: Vec<String> = Vec::new();
+
+    if cfg!(windows) {
+        if !home.is_empty() {
+            path_parts.push(
+                Path::new(home)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("npm")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            path_parts.push(
+                Path::new(home)
+                    .join(".npm-global")
+                    .join("bin")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            path_parts.push(
+                Path::new(home)
+                    .join(".yarn")
+                    .join("bin")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            path_parts.push(
+                Path::new(home)
+                    .join(".bun")
+                    .join("bin")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            path_parts.push(
+                Path::new(home)
+                    .join("scoop")
+                    .join("shims")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    } else {
+        if !home.is_empty() {
+            path_parts.push(Path::new(home).join(".local").join("bin").to_string_lossy().to_string());
+            path_parts.push(Path::new(home).join(".npm-global").join("bin").to_string_lossy().to_string());
+            path_parts.push(Path::new(home).join("node_modules").join(".bin").to_string_lossy().to_string());
+            path_parts.push(Path::new(home).join(".yarn").join("bin").to_string_lossy().to_string());
+            path_parts.push(Path::new(home).join(".bun").join("bin").to_string_lossy().to_string());
+            path_parts.push(Path::new(home).join(".local").join("share").join("pnpm").to_string_lossy().to_string());
+        }
+        if let Some(nvm_dir) = find_nvm_dir(home) {
+            append_nvm_path(&mut path_parts, &nvm_dir);
+            cmd.env("NVM_DIR", nvm_dir);
+        }
+        path_parts.push("/usr/local/bin".to_string());
+        path_parts.push("/usr/bin".to_string());
+        path_parts.push("/bin".to_string());
+        path_parts.push("/opt/homebrew/bin".to_string());
+        path_parts.push("/opt/homebrew/sbin".to_string());
+    }
+
+    if let Ok(existing_path) = std::env::var("PATH") {
+        path_parts.push(existing_path);
+    }
+
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    if !path_parts.is_empty() {
+        cmd.env("PATH", path_parts.join(separator));
+    }
+
+    if !home.is_empty() {
+        cmd.env("HOME", home);
+        if cfg!(windows) {
+            cmd.env("USERPROFILE", home);
+        }
+    }
+
+    if !cfg!(windows) {
+        cmd.env("TERM", "xterm-256color");
+        if let Ok(shell) = std::env::var("SHELL") {
+            cmd.env("SHELL", shell);
+        }
+    }
+}
+
+fn build_command_builder(
+    cli_cmd: &CliCommand,
+    project_dir: &Path,
+    home: &str,
+) -> CommandBuilder {
+    #[cfg(windows)]
+    {
+        let mut cmd = CommandBuilder::new(&cli_cmd.program);
+        for arg in &cli_cmd.args {
+            cmd.arg(arg);
+        }
+        cmd.cwd(project_dir);
+        configure_command_env(&mut cmd, home);
+        cmd
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = CommandBuilder::new(resolve_shell_path());
+        cmd.arg("-l");
+        cmd.arg("-c");
+        cmd.arg(&build_shell_command(cli_cmd));
+        cmd.cwd(project_dir);
+        configure_command_env(&mut cmd, home);
+        cmd
+    }
+}
+
+fn update_session_conversation_id(
+    db: &Arc<Database>,
+    app: &AppHandle,
+    session_id: &str,
+    conversation_id: &str,
+) {
+    if conversation_id.trim().is_empty() {
+        return;
+    }
+    if db.update_conversation_id(session_id, conversation_id).is_ok() {
+        let _ = app.emit(
+            "conversation-id",
+            serde_json::json!({
+                "sessionId": session_id,
+                "conversationId": conversation_id,
+            }),
+        );
+    }
+}
 
 fn maybe_write_pty_snapshot(
     capture_dir: &Option<String>,
@@ -339,8 +752,10 @@ impl SessionManager {
             })
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
-        // Build command based on CLI type
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/bigphoot".to_string());
+        // Resolve home directory for cross-platform compatibility
+        let home = resolve_home_dir();
+        let project_dir = resolve_project_dir(&project_path, &home)?;
+        let project_path = project_dir.to_string_lossy().to_string();
 
         // Load config for fallback settings
         let app_config = config::load_config(&app).unwrap_or_default();
@@ -356,121 +771,44 @@ impl SessionManager {
         // Generate a conversation ID for Claude Code sessions
         let conversation_id = uuid::Uuid::new_v4().to_string();
 
-        // Build the actual CLI command, then wrap in shell with "stty -echo" to disable PTY echo.
-        // This prevents input from being echoed back to mobile clients - desktop xterm handles
-        // local echo display, so mobile only sees command output, not echoed keystrokes.
-        let shell_cmd = match cli_type {
-            CliType::ClaudeCode => {
-                let claude_path = format!("{}/.local/bin/claude", home);
-                let skip_perms_flag = if use_skip_permissions {
-                    tracing::info!("Claude session starting with --dangerously-skip-permissions");
-                    " --dangerously-skip-permissions"
-                } else {
-                    ""
-                };
-                format!(
-                    "stty -echo; exec '{}' --session-id '{}'{}",
-                    claude_path, conversation_id, skip_perms_flag
-                )
-            }
-            CliType::GeminiCli => {
-                // Gemini CLI is typically installed via npm
-                "stty -echo; exec gemini".to_string()
-            }
-            CliType::OpenCode => {
-                // OpenCode is typically installed in ~/.opencode/bin/
-                let opencode_path = format!("{}/.opencode/bin/opencode", home);
-                format!(
-                    "stty -echo; exec '{}' '{}'",
-                    opencode_path, project_path
-                )
-            }
-            CliType::Codex => {
-                // Codex (OpenAI) is typically available on PATH
-                tracing::info!(
-                    "Codex session starting with approval policy: {}",
-                    use_codex_policy.as_flag()
-                );
-                format!(
-                    "stty -echo; exec codex -C '{}' -a {}",
-                    project_path, use_codex_policy.as_flag()
-                )
-            }
-        };
-
-        // Wrap in bash login shell to ensure PATH includes user's installed CLIs
-        // -l makes it a login shell which sources ~/.bash_profile or ~/.profile
-        // -i makes it interactive which sources ~/.bashrc
-        let mut cmd = CommandBuilder::new("/bin/bash");
-        cmd.arg("-l"); // Login shell - sources profile for PATH
-        cmd.arg("-c");
-        cmd.arg(&shell_cmd);
-        cmd.cwd(&project_path);
-
-        // Apply common environment setup
-        // Build extended PATH that includes common CLI installation locations
-        let mut path_parts: Vec<String> = Vec::new();
-
-        // User's local bin (pip, etc.)
-        path_parts.push(format!("{}/.local/bin", home));
-
-        // npm global bin (gemini, codex, etc.)
-        path_parts.push(format!("{}/.npm-global/bin", home));
-        path_parts.push(format!("{}/node_modules/.bin", home));
-
-        // nvm managed node (fallback to ~/.nvm if NVM_DIR not set)
-        let nvm_dir = std::env::var("NVM_DIR").ok().or_else(|| {
-            let default_dir = format!("{}/.nvm", home);
-            if std::path::Path::new(&default_dir).exists() {
-                Some(default_dir)
-            } else {
-                None
-            }
-        });
-        if let Some(nvm_dir) = nvm_dir.as_ref() {
-            // Try to find current node version
-            let nvm_current = format!("{}/versions/node", nvm_dir);
-            if std::path::Path::new(&nvm_current).exists() {
-                if let Ok(entries) = std::fs::read_dir(&nvm_current) {
-                    if let Some(Ok(entry)) = entries.into_iter().next() {
-                        path_parts.push(format!("{}/bin", entry.path().display()));
-                    }
-                }
-            }
+        if matches!(cli_type, CliType::Codex) {
+            tracing::info!(
+                "Codex session starting with approval policy: {}",
+                use_codex_policy.as_flag()
+            );
+        }
+        if use_skip_permissions && matches!(cli_type, CliType::ClaudeCode) {
+            tracing::info!("Claude session starting with --dangerously-skip-permissions");
         }
 
-        // Common system install locations
-        path_parts.push("/usr/local/bin".to_string());
-        path_parts.push("/usr/bin".to_string());
-        path_parts.push("/bin".to_string());
-        path_parts.push("/opt/homebrew/bin".to_string());
-        path_parts.push("/opt/homebrew/sbin".to_string());
-
-        // Existing PATH
-        if let Ok(existing_path) = std::env::var("PATH") {
-            path_parts.push(existing_path);
-        }
-
-        cmd.env("PATH", path_parts.join(":"));
-        cmd.env("HOME", &home);
-        cmd.env("TERM", "xterm-256color");
-        if let Ok(shell) = std::env::var("SHELL") {
-            cmd.env("SHELL", shell);
-        }
-        // Pass NVM_DIR if set for nvm-managed node
-        if let Some(nvm_dir) = nvm_dir {
-            cmd.env("NVM_DIR", nvm_dir);
-        }
+        let cli_cmd = build_cli_command_for_start(
+            cli_type,
+            &project_path,
+            &conversation_id,
+            use_skip_permissions,
+            use_codex_policy.as_flag(),
+            &home,
+        );
+        let cmd = build_command_builder(&cli_cmd, &project_dir, &home);
 
         tracing::info!("Starting {} in {}", cli_type.display_name(), project_path);
 
-        // Store conversation ID for all CLI types - Claude uses it for resume, others for tracking
-        let _ = db.update_conversation_id(&session_id, &conversation_id);
-        tracing::info!(
-            "Set conversation ID for session {}: {}",
-            session_id,
-            conversation_id
-        );
+        // Store conversation ID only when we explicitly control it (Claude).
+        if matches!(cli_type, CliType::ClaudeCode) {
+            let _ = db.update_conversation_id(&session_id, &conversation_id);
+            tracing::info!(
+                "Set conversation ID for session {}: {}",
+                session_id,
+                conversation_id
+            );
+            let _ = app.emit(
+                "conversation-id",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "conversationId": conversation_id,
+                }),
+            );
+        }
 
         // Spawn the CLI process with retry on failure
         let mut child = {
@@ -560,10 +898,11 @@ impl SessionManager {
         let session_id_clone = session_id.clone();
         let cli_type_for_parser = cli_type; // Copy for the spawned task
         let capture_dir_for_reader = capture_dir.clone();
+        let db_for_reader = db.clone();
         let reader_task = tokio::task::spawn_blocking(move || {
             let mut parser = OutputParser::new(cli_type_for_parser);
             let mut buffer = [0u8; 4096];
-            let mut conversation_id_found = false;
+            let mut conversation_id_found = cli_type_for_parser == CliType::ClaudeCode;
             // Track if we've already auto-accepted trust prompt to prevent duplicate sends
             let mut trust_prompt_accepted = false;
             let respond_to_dsr = cli_type_for_parser == CliType::Codex;
@@ -698,7 +1037,7 @@ impl SessionManager {
                                 );
 
                                 // Update database with conversation ID
-                                let _ = db.update_conversation_id(&session_id_clone, &conv_id);
+                                let _ = db_for_reader.update_conversation_id(&session_id_clone, &conv_id);
 
                                 // Emit event to frontend
                                 let _ = app.emit(
@@ -936,6 +1275,11 @@ impl SessionManager {
 
                 match codex_path {
                     Some(path) => {
+                        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Some(conv_id) = codex::extract_session_id_from_filename(filename) {
+                                update_session_conversation_id(&db, &app_for_watcher, &session_id, &conv_id);
+                            }
+                        }
                         match CodexWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
                                 tracing::info!(
@@ -1004,6 +1348,11 @@ impl SessionManager {
 
                 match gemini_path {
                     Some(path) => {
+                        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Some(conv_id) = gemini::extract_session_id_from_filename(filename) {
+                                update_session_conversation_id(&db, &app_for_watcher, &session_id, &conv_id);
+                            }
+                        }
                         match GeminiWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
                                 tracing::info!(
@@ -1063,6 +1412,7 @@ impl SessionManager {
 
                 match opencode_session {
                     Some(oc_session_id) => {
+                        update_session_conversation_id(&db, &app_for_watcher, &session_id, &oc_session_id);
                         match OpenCodeWatcher::new(
                             session_id.clone(),
                             oc_session_id.clone(),
@@ -1274,7 +1624,7 @@ impl SessionManager {
         project_path: String,
         conversation_id: String,
         cli_type: CliType,
-        _db: Arc<Database>, // Unused after JSONL redesign - JSONL watcher handles storage
+        db: Arc<Database>,
         app: AppHandle,
         claude_skip_permissions: Option<bool>,
     ) -> Result<(), PtyError> {
@@ -1289,91 +1639,33 @@ impl SessionManager {
             })
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/bigphoot".to_string());
+        let home = resolve_home_dir();
+        let project_dir = resolve_project_dir(&project_path, &home)?;
+        let project_path = project_dir.to_string_lossy().to_string();
 
         // Load config for CLI-specific settings
         let app_config = config::load_config(&app).unwrap_or_default();
 
-        // Build resume command wrapped in shell with "stty -echo" to disable PTY echo.
-        // This prevents input from being echoed back to mobile clients.
-        let shell_cmd = match cli_type {
-            CliType::ClaudeCode => {
-                let claude_path = format!("{}/.local/bin/claude", home);
-                // ISSUE #2: Use passed setting if provided, otherwise fall back to config
-                let use_skip_permissions = claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
-                let skip_perms_flag = if use_skip_permissions {
-                    tracing::info!("Claude resume starting with --dangerously-skip-permissions");
-                    " --dangerously-skip-permissions"
-                } else {
-                    ""
-                };
-                format!(
-                    "stty -echo; exec '{}' --resume '{}'{}",
-                    claude_path, conversation_id, skip_perms_flag
-                )
-            }
-            CliType::GeminiCli => {
-                // Gemini uses --resume with session index or "latest"
-                format!(
-                    "stty -echo; exec gemini --resume '{}'",
-                    conversation_id
-                )
-            }
-            CliType::OpenCode => {
-                // OpenCode uses -c flag to continue last session
-                let opencode_path = format!("{}/.opencode/bin/opencode", home);
-                format!(
-                    "stty -echo; exec '{}' -c '{}'",
-                    opencode_path, project_path
-                )
-            }
-            CliType::Codex => {
-                // Codex uses "codex resume [session_id]"
-                tracing::info!(
-                    "Codex resume starting with approval policy: {}",
-                    app_config.codex_approval_policy.as_flag()
-                );
-                format!(
-                    "stty -echo; exec codex resume '{}' -C '{}' -a {}",
-                    conversation_id, project_path, app_config.codex_approval_policy.as_flag()
-                )
-            }
-        };
+        let use_skip_permissions = claude_skip_permissions.unwrap_or(app_config.claude_skip_permissions);
+        if matches!(cli_type, CliType::Codex) {
+            tracing::info!(
+                "Codex resume starting with approval policy: {}",
+                app_config.codex_approval_policy.as_flag()
+            );
+        }
+        if use_skip_permissions && matches!(cli_type, CliType::ClaudeCode) {
+            tracing::info!("Claude resume starting with --dangerously-skip-permissions");
+        }
 
-        // Wrap in bash login shell to ensure PATH includes user's installed CLIs
-        let mut cmd = CommandBuilder::new("/bin/bash");
-        cmd.arg("-l"); // Login shell - sources profile for PATH
-        cmd.arg("-c");
-        cmd.arg(&shell_cmd);
-        cmd.cwd(&project_path);
-
-        // Build extended PATH that includes common CLI installation locations
-        let mut path_parts: Vec<String> = Vec::new();
-        path_parts.push(format!("{}/.local/bin", home));
-        path_parts.push(format!("{}/.npm-global/bin", home));
-        path_parts.push(format!("{}/node_modules/.bin", home));
-        if let Ok(nvm_dir) = std::env::var("NVM_DIR") {
-            let nvm_current = format!("{}/versions/node", nvm_dir);
-            if std::path::Path::new(&nvm_current).exists() {
-                if let Ok(entries) = std::fs::read_dir(&nvm_current) {
-                    if let Some(Ok(entry)) = entries.into_iter().next() {
-                        path_parts.push(format!("{}/bin", entry.path().display()));
-                    }
-                }
-            }
-        }
-        if let Ok(existing_path) = std::env::var("PATH") {
-            path_parts.push(existing_path);
-        }
-        cmd.env("PATH", path_parts.join(":"));
-        cmd.env("HOME", &home);
-        cmd.env("TERM", "xterm-256color");
-        if let Ok(shell) = std::env::var("SHELL") {
-            cmd.env("SHELL", shell);
-        }
-        if let Ok(nvm_dir) = std::env::var("NVM_DIR") {
-            cmd.env("NVM_DIR", nvm_dir);
-        }
+        let cli_cmd = build_cli_command_for_resume(
+            cli_type,
+            &project_path,
+            &conversation_id,
+            use_skip_permissions,
+            app_config.codex_approval_policy.as_flag(),
+            &home,
+        );
+        let mut cmd = build_command_builder(&cli_cmd, &project_dir, &home);
 
         tracing::info!(
             "Resuming {} session {} with conversation {} in {}",
@@ -1765,6 +2057,11 @@ impl SessionManager {
 
                 match codex_path {
                     Some(path) => {
+                        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Some(conv_id) = codex::extract_session_id_from_filename(filename) {
+                                update_session_conversation_id(&db, &app_for_watcher, &session_id, &conv_id);
+                            }
+                        }
                         match CodexWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
                                 tracing::info!(
@@ -1798,6 +2095,11 @@ impl SessionManager {
 
                 match gemini_path {
                     Some(path) => {
+                        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Some(conv_id) = gemini::extract_session_id_from_filename(filename) {
+                                update_session_conversation_id(&db, &app_for_watcher, &session_id, &conv_id);
+                            }
+                        }
                         match GeminiWatcher::new(session_id.clone(), path, app_for_watcher) {
                             Ok(watcher) => {
                                 tracing::info!(
@@ -1829,6 +2131,7 @@ impl SessionManager {
 
                 match opencode_session {
                     Some(oc_session_id) => {
+                        update_session_conversation_id(&db, &app_for_watcher, &session_id, &oc_session_id);
                         match OpenCodeWatcher::new(
                             session_id.clone(),
                             oc_session_id.clone(),

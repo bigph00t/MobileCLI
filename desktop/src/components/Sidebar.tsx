@@ -44,7 +44,7 @@ export default function Sidebar({
   onOpenAbout,
   onOpenHelp,
 }: SidebarProps) {
-  const { createSession, resumeSession, closeSession, deleteSession, fetchAvailableClis, availableClis, waitingStates, inputStates } = useSessionStore();
+  const { createSession, resumeSession, closeSession, renameSession, deleteSession, fetchAvailableClis, availableClis, waitingStates, inputStates } = useSessionStore();
   const [isCreating, setIsCreating] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -55,6 +55,11 @@ export default function Sidebar({
   const [newFolderName, setNewFolderName] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<Session | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -100,6 +105,40 @@ export default function Sidebar({
       alert('Failed to delete session: ' + String(e));
     }
     setContextMenu(null);
+  };
+
+  const handleOpenRename = () => {
+    if (!contextMenu) return;
+    setRenameTarget(contextMenu.session);
+    setRenameValue(contextMenu.session.name);
+    setRenameError(null);
+    setShowRenameModal(true);
+    setContextMenu(null);
+  };
+
+  const handleRenameConfirm = async () => {
+    if (!renameTarget) return;
+    const name = renameValue.trim();
+    if (!name) {
+      setRenameError('Session name cannot be empty');
+      return;
+    }
+    if (name === renameTarget.name) {
+      setShowRenameModal(false);
+      setRenameTarget(null);
+      return;
+    }
+    setIsRenaming(true);
+    setRenameError(null);
+    try {
+      await renameSession(renameTarget.id, name);
+      setShowRenameModal(false);
+      setRenameTarget(null);
+    } catch (e) {
+      setRenameError(String(e));
+    } finally {
+      setIsRenaming(false);
+    }
   };
 
   const handleContextMenu = (e: React.MouseEvent, session: Session) => {
@@ -405,6 +444,15 @@ export default function Sidebar({
           <div className="px-3 py-1.5 text-xs text-[#565f89] border-b border-[#414868]/50 truncate max-w-[180px]">
             {contextMenu.session.name}
           </div>
+          <button
+            onClick={handleOpenRename}
+            className="w-full text-left px-3 py-2 text-sm text-[#c0caf5] hover:bg-[#24283b] flex items-center gap-2 transition-colors"
+          >
+            <svg className="w-4 h-4 text-[#7aa2f7]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.862 3.487a2.25 2.25 0 013.182 3.182L8.25 18.463l-4.5 1.125 1.125-4.5L16.862 3.487z" />
+            </svg>
+            Rename
+          </button>
           {contextMenu.session.status !== 'closed' ? (
             <button
               onClick={handleCloseSession}
@@ -511,6 +559,54 @@ export default function Sidebar({
                 className="px-4 py-2 bg-[#9ece6a] hover:bg-[#a9d974] text-[#1a1b26] font-medium rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {isCreatingFolder ? 'Creating...' : 'Create & Start Session'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRenameModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-[#1a1b26] border border-[#414868] rounded-lg p-6 w-96 shadow-xl">
+            <h2 className="text-lg font-semibold text-[#c0caf5] mb-4">Rename Session</h2>
+
+            <div className="mb-4">
+              <label className="block text-sm text-[#a9b1d6] mb-2">Session Name</label>
+              <input
+                type="text"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRenameConfirm();
+                  if (e.key === 'Escape') {
+                    setShowRenameModal(false);
+                    setRenameTarget(null);
+                  }
+                }}
+                className="w-full bg-[#24283b] border border-[#414868] rounded px-3 py-2 text-sm text-[#c0caf5] placeholder-[#565f89] focus:outline-none focus:border-[#7aa2f7]"
+                placeholder="Enter session name..."
+              />
+              {renameError && (
+                <p className="text-xs text-[#f7768e] mt-2">{renameError}</p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setShowRenameModal(false);
+                  setRenameTarget(null);
+                }}
+                className="px-4 py-2 text-sm text-[#a9b1d6] hover:text-[#c0caf5] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRenameConfirm}
+                disabled={isRenaming}
+                className="px-4 py-2 bg-[#7aa2f7] hover:bg-[#89b4fa] text-[#1a1b26] font-medium rounded text-sm disabled:opacity-50 transition-colors"
+              >
+                {isRenaming ? 'Renaming...' : 'Rename'}
               </button>
             </div>
           </div>

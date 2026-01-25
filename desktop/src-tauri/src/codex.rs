@@ -7,6 +7,7 @@
 //! for the mobile app.
 
 use serde::{Deserialize, Serialize};
+use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -133,6 +134,16 @@ pub fn get_latest_session_file() -> Option<PathBuf> {
     }
 
     latest.map(|(path, _)| path)
+}
+
+/// Extract session UUID from a Codex rollout filename.
+/// Example: rollout-2026-01-15T20-26-02-0f4c2d2f-1b2c-3d4e-5f6a-7b8c9d0e1f2a.jsonl
+pub fn extract_session_id_from_filename(filename: &str) -> Option<String> {
+    let uuid_regex = Regex::new(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    )
+    .ok()?;
+    uuid_regex.find(filename).map(|m| m.as_str().to_string())
 }
 
 // ============================================================================

@@ -60,6 +60,7 @@ interface SessionState {
   setActiveSession: (sessionId: string | null) => void;
   createSession: (projectPath: string, name?: string, cliType?: string) => Promise<Session>;
   closeSession: (sessionId: string) => Promise<void>;
+  renameSession: (sessionId: string, newName: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   resumeSession: (sessionId: string) => Promise<Session>;
   fetchMessages: (sessionId: string) => Promise<void>;
@@ -150,6 +151,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     } catch (e) {
       set({ error: String(e) });
+    }
+  },
+
+  renameSession: async (sessionId, newName) => {
+    const name = newName.trim();
+    if (!name) {
+      throw new Error('Session name cannot be empty');
+    }
+
+    try {
+      await invoke('rename_session', { sessionId, newName: name });
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, name } : s
+        ),
+      }));
+    } catch (e) {
+      set({ error: String(e) });
+      throw e;
     }
   },
 
