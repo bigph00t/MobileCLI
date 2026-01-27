@@ -4,6 +4,7 @@
 //!   mobilecli              # Start your shell with mobile streaming
 //!   mobilecli <command>    # Run a command with mobile streaming
 //!   mobilecli -n "Work"    # Name your session
+//!   mobilecli --setup      # Run setup wizard
 //!   mobilecli status       # Show active sessions
 //!   mobilecli --help       # Show help
 
@@ -12,6 +13,7 @@ mod websocket;
 mod qr;
 mod protocol;
 mod session;
+mod setup;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -41,6 +43,18 @@ struct Cli {
     /// Don't show QR code on startup
     #[arg(long = "no-qr")]
     no_qr: bool,
+
+    /// Run the setup wizard to configure connection settings
+    #[arg(long = "setup")]
+    setup: bool,
+
+    /// Use local network connection (same WiFi)
+    #[arg(long = "local")]
+    use_local: bool,
+
+    /// Use Tailscale VPN connection
+    #[arg(long = "tailscale")]
+    use_tailscale: bool,
 }
 
 #[derive(Subcommand)]
@@ -49,6 +63,8 @@ enum Commands {
     Status,
     /// Generate QR code for mobile pairing (standalone, no session)
     Pair,
+    /// Run the setup wizard
+    Setup,
 }
 
 #[tokio::main]
@@ -64,8 +80,19 @@ async fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
+    // Run setup wizard if requested or first run
+    if cli.setup {
+        match setup::run_setup_wizard() {
+            Ok(_) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}: {}", "Setup error".red().bold(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     // Handle subcommands
-    if let Some(command) = cli.command {
+    if let Some(command) = &cli.command {
         return match command {
             Commands::Status => {
                 session::show_status();
@@ -80,8 +107,57 @@ async fn main() -> ExitCode {
                     }
                 }
             }
+            Commands::Setup => {
+                match setup::run_setup_wizard() {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{}: {}", "Setup error".red().bold(), e);
+                        ExitCode::FAILURE
+                    }
+                }
+            }
         };
     }
+
+    // Check for first run - show setup wizard
+    if setup::is_first_run() && cli.args.is_empty() {
+        println!();
+        println!("{}", "Welcome to MobileCLI! Let's get you set up.".cyan().bold());
+        match setup::run_setup_wizard() {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{}: {}", "Setup error".red().bold(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // Load config (or use defaults)
+    let config = setup::load_config().unwrap_or_default();
+
+    // Determine connection mode from flags or config
+    let connection_mode = if cli.use_tailscale {
+        setup::ConnectionMode::Tailscale
+    } else if cli.use_local {
+        setup::ConnectionMode::Local
+    } else {
+        config.connection_mode.clone()
+    };
+
+    // Get the IP to use for QR code
+    let connection_ip = match &connection_mode {
+        setup::ConnectionMode::Local => setup::get_local_ip(),
+        setup::ConnectionMode::Tailscale => {
+            let ts = setup::check_tailscale();
+            if !ts.logged_in {
+                eprintln!("{}", "⚠ Tailscale not connected. Run 'mobilecli --setup' or 'tailscale up'".yellow());
+                setup::get_local_ip() // Fall back to local
+            } else {
+                ts.ip.or_else(setup::get_local_ip)
+            }
+        }
+        setup::ConnectionMode::Custom(_) => setup::get_connection_ip(&config),
+    };
 
     // Determine what command to run
     let (command, args) = if cli.args.is_empty() {
@@ -105,15 +181,16 @@ async fn main() -> ExitCode {
     });
 
     // Run the wrapped command
-    let config = pty_wrapper::WrapConfig {
+    let wrap_config = pty_wrapper::WrapConfig {
         command,
         args,
         session_name,
         port: cli.port,
         show_qr: !cli.no_qr,
+        connection_ip,
     };
 
-    match pty_wrapper::run_wrapped(config).await {
+    match pty_wrapper::run_wrapped(wrap_config).await {
         Ok(exit_code) => ExitCode::from(exit_code as u8),
         Err(e) => {
             eprintln!("{}: {}", "Error".red().bold(), e);

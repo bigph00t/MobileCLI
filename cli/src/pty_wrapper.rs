@@ -45,6 +45,8 @@ pub struct WrapConfig {
     pub session_name: String,
     pub port: Option<u16>,
     pub show_qr: bool,
+    /// IP address to use in QR code (from setup config)
+    pub connection_ip: Option<String>,
 }
 
 /// Resolve a command to its full path
@@ -134,7 +136,7 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 
     // Show connection info
     if config.show_qr {
-        print_connection_banner(&config.session_name, &session_id, ws_port);
+        print_connection_banner(&config.session_name, &session_id, ws_port, config.connection_ip.as_deref());
     } else {
         println!(
             "{} {} {} {}",
@@ -323,7 +325,7 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 }
 
 /// Print the connection banner when starting a session
-fn print_connection_banner(session_name: &str, session_id: &str, ws_port: u16) {
+fn print_connection_banner(session_name: &str, session_id: &str, ws_port: u16, connection_ip: Option<&str>) {
     println!();
     println!(
         "{}",
@@ -342,10 +344,14 @@ fn print_connection_banner(session_name: &str, session_id: &str, ws_port: u16) {
             .cyan()
     );
 
-    // Show QR code if we can get local IP
-    if let Ok(local_ip) = qr::get_local_ip() {
+    // Use provided IP or fall back to local IP detection
+    let ip = connection_ip
+        .map(|s| s.to_string())
+        .or_else(|| qr::get_local_ip().ok());
+
+    if let Some(ip) = ip {
         let info = ConnectionInfo {
-            ws_url: format!("ws://{}:{}", local_ip, ws_port),
+            ws_url: format!("ws://{}:{}", ip, ws_port),
             session_id: session_id.to_string(),
             session_name: Some(session_name.to_string()),
             encryption_key: None,
