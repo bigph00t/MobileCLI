@@ -101,6 +101,8 @@ pub struct SessionListItem {
     pub project_path: String,
     pub ws_port: u16,
     pub started_at: String,
+    /// Explicit CLI type identifier for mobile app disambiguation
+    pub cli_type: String,
 }
 
 /// Connection info for QR code / pairing

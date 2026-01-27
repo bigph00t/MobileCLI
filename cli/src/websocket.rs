@@ -258,6 +258,7 @@ async fn handle_connection(
                                             project_path: s.project_path,
                                             ws_port: s.ws_port,
                                             started_at: s.started_at.to_rfc3339(),
+                                            cli_type: "terminal".to_string(),
                                         })
                                         .collect();
                                     let msg = ServerMessage::Sessions { sessions: items };
