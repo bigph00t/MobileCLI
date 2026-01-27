@@ -178,16 +178,22 @@ async fn handle_connection(
         .send(Message::Text(serde_json::to_string(&welcome)?))
         .await?;
 
-    // Send session info
+    // Send session info - get command from registered session data
+    let (command, project_path) = session::get_session(&session_id)
+        .map(|s| (s.command, s.project_path))
+        .unwrap_or_else(|| {
+            // Fallback if session not registered yet
+            let cmd = std::env::var("SHELL").unwrap_or_else(|_| "shell".to_string());
+            let path = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            (cmd, path)
+        });
     let session_info = ServerMessage::SessionInfo {
         session_id: session_id.clone(),
         name: session_name.clone(),
-        command: std::env::args().nth(1).unwrap_or_else(|| {
-            std::env::var("SHELL").unwrap_or_else(|_| "shell".to_string())
-        }),
-        project_path: std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
+        command,
+        project_path,
         started_at: chrono::Utc::now().to_rfc3339(),
     };
     ws_sender

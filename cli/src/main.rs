@@ -162,7 +162,7 @@ async fn main() -> ExitCode {
     // Determine what command to run
     let (command, args) = if cli.args.is_empty() {
         // No command specified - run user's shell
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         (shell, vec![])
     } else {
         // Command specified

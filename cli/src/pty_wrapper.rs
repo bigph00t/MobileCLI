@@ -225,6 +225,9 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 
     // Configure terminal for raw mode
     let original_termios = setup_raw_mode();
+    if original_termios.is_none() {
+        tracing::warn!("Failed to set raw terminal mode. Input may be line-buffered.");
+    }
 
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
