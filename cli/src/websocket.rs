@@ -168,6 +168,8 @@ async fn handle_connection(
     clients.write().await.insert(addr, client_tx);
 
     // Send welcome message
+    // Note: authenticated=true indicates connection accepted. Security relies on
+    // network access control (local network, Tailscale VPN) rather than password auth.
     let welcome = ServerMessage::Welcome {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         authenticated: true,

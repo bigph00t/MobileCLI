@@ -121,7 +121,13 @@ pub struct ConnectionInfo {
 impl ConnectionInfo {
     /// Encode as JSON for QR code (full format)
     pub fn to_qr_data(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+        match serde_json::to_string(self) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!("Failed to serialize ConnectionInfo: {}", e);
+                String::new()
+            }
+        }
     }
 
     /// Encode as compact string for QR code (smaller QR)
@@ -134,9 +140,10 @@ impl ConnectionInfo {
             .or_else(|| self.ws_url.strip_prefix("wss://"))
             .unwrap_or(&self.ws_url);
 
-        // Use short session ID (first 8 chars of UUID is enough for pairing)
-        let short_id = if self.session_id.len() > 8 {
-            &self.session_id[..8]
+        // Use shortened session ID (first 12 chars for better collision resistance)
+        // 12 hex chars = 48 bits of entropy, birthday collision at ~16M sessions
+        let short_id = if self.session_id.len() > 12 {
+            &self.session_id[..12]
         } else {
             &self.session_id
         };

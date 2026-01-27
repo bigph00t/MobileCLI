@@ -47,9 +47,6 @@ local-ip-address = "0.6"
 base64 = "0.22"
 rand = "0.8"
 
-# E2E Encryption (NaCl secretbox - XSalsa20-Poly1305)
-crypto_secretbox = "0.1"
-
 # Terminal colors
 colored = "2"
 

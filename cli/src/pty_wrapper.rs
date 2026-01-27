@@ -213,9 +213,11 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 
     // Set up Ctrl+C handler
     let running_ctrlc = running.clone();
-    let _ = ctrlc::set_handler(move || {
+    if let Err(e) = ctrlc::set_handler(move || {
         running_ctrlc.store(false, Ordering::SeqCst);
-    });
+    }) {
+        tracing::warn!("Failed to set Ctrl+C handler: {}. Graceful shutdown may not work.", e);
+    }
 
     // Set up stdin reading (for local terminal input)
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
