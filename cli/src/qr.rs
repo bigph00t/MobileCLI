@@ -30,14 +30,21 @@ pub fn display_qr(data: &str) -> Result<(), QrError> {
     let code = QrCode::new(data.as_bytes())
         .map_err(|e| QrError::Generation(e.to_string()))?;
 
-    // Use Unicode block characters for high-density QR display
+    // Use compact 1x1 modules for smaller QR display
     let string = code
         .render::<char>()
-        .quiet_zone(true)
-        .module_dimensions(2, 1)
+        .quiet_zone(false)
+        .module_dimensions(1, 1)
         .build();
 
-    println!("{}", string);
+    // Print safely line by line
+    for line in string.lines() {
+        if std::io::Write::write_all(&mut std::io::stdout(), line.as_bytes()).is_err() {
+            break;
+        }
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\n");
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     Ok(())
 }
 
@@ -122,17 +129,43 @@ pub fn display_session_qr(info: &ConnectionInfo) {
         "Scan to connect from mobile:".cyan().bold()
     );
 
-    if let Ok(code) = QrCode::new(info.to_qr_data().as_bytes()) {
-        let string = code
-            .render::<char>()
-            .quiet_zone(true)
-            .module_dimensions(2, 1)
-            .build();
+    // Use compact QR format for much smaller QR code
+    let qr_data = info.to_compact_qr();
 
-        // Indent the QR code
-        for line in string.lines() {
-            println!("  {}", line);
+    if let Ok(code) = QrCode::new(qr_data.as_bytes()) {
+        // Get the QR code as a 2D grid of bools
+        let width = code.width();
+        let mut modules: Vec<Vec<bool>> = vec![vec![false; width]; width];
+
+        for y in 0..width {
+            for x in 0..width {
+                use qrcode::Color;
+                modules[y][x] = code[(x, y)] == Color::Dark;
+            }
         }
+
+        // Render using Unicode half-block characters (2 rows per line)
+        // ▀ = top half, ▄ = bottom half, █ = full block, ' ' = empty
+        let mut stdout = std::io::stdout();
+        for y in (0..width).step_by(2) {
+            print!("  ");
+            for x in 0..width {
+                let top = modules[y][x];
+                let bottom = if y + 1 < width { modules[y + 1][x] } else { false };
+
+                let ch = match (top, bottom) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    (false, false) => ' ',
+                };
+                let _ = std::io::Write::write_all(&mut stdout, ch.to_string().as_bytes());
+            }
+            let _ = std::io::Write::write_all(&mut stdout, b"\n");
+        }
+        let _ = std::io::Write::flush(&mut stdout);
+    } else {
+        println!("  (QR generation failed - use URL below)");
     }
 
     println!();

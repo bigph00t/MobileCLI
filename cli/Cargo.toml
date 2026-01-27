@@ -60,6 +60,9 @@ ctrlc = "3"
 which = "6"
 term_size = "0.3"
 
+# URL encoding for compact QR
+urlencoding = "2"
+
 [profile.release]
 lto = true
 codegen-units = 1

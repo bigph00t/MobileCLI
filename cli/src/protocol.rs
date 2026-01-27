@@ -119,8 +119,33 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
-    /// Encode as JSON for QR code
+    /// Encode as JSON for QR code (full format)
     pub fn to_qr_data(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Encode as compact string for QR code (smaller QR)
+    /// Format: mobilecli://host:port/session_id[/name]
+    pub fn to_compact_qr(&self) -> String {
+        // Extract host:port from ws_url
+        let host_port = self
+            .ws_url
+            .strip_prefix("ws://")
+            .or_else(|| self.ws_url.strip_prefix("wss://"))
+            .unwrap_or(&self.ws_url);
+
+        // Use short session ID (first 8 chars of UUID is enough for pairing)
+        let short_id = if self.session_id.len() > 8 {
+            &self.session_id[..8]
+        } else {
+            &self.session_id
+        };
+
+        // Build compact URL
+        if let Some(name) = &self.session_name {
+            format!("mobilecli://{}/{}/{}", host_port, short_id, urlencoding::encode(name))
+        } else {
+            format!("mobilecli://{}/{}", host_port, short_id)
+        }
     }
 }
