@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capabilities for MobileCLI","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","dialog:allow-open","dialog:default"]}}

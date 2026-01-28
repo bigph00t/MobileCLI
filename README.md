@@ -1,82 +1,71 @@
-# MobileCLI Desktop
+# MobileCLI
 
-Control Claude Code, Gemini CLI, Codex, and OpenCode from your phone while your desktop runs the sessions.
+Stream your terminal sessions to your phone. Control Claude Code, Gemini CLI, Codex, and other AI coding assistants from anywhere.
 
-Website: https://mobilecli.app  
-Docs: https://mobilecli.app/docs  
+Website: https://mobilecli.app
 Releases: https://github.com/bigph00t/MobileCLI/releases
-
-## Screenshots (placeholders)
-
-Add images to `docs/images/` and they will render here.
-
-![Desktop overview](docs/images/desktop-overview.png)
-![Pairing QR screen](docs/images/desktop-qr.png)
-![Mobile terminal view](docs/images/mobile-terminal.png)
 
 ## What is MobileCLI
 
-MobileCLI is a desktop host + mobile controller. Your CLI sessions run on your desktop, and the mobile app is a secure remote keyboard, display, and approval UI. Nothing runs in the cloud by default.
+MobileCLI is a lightweight CLI tool that streams your terminal sessions to your phone. Run any command-line tool on your computer and view/control it from the mobile app. Perfect for AI coding assistants that need approval for tool use.
 
 ## Key features
 
-- Desktop-hosted AI CLI sessions with a mobile companion.
-- Live terminal view with real-time output and resizing.
-- Tool approvals and clarifying questions via quick actions.
-- QR-based pairing and reconnects.
-- Local network or Tailscale connectivity.
+- Stream any terminal session to your phone
+- Real-time terminal output with ANSI color support
+- Tool approval notifications and quick actions
+- QR-based pairing for easy setup
+- Local network or Tailscale connectivity
+- No cloud required - everything runs locally
+
+## Quick start
+
+```bash
+# Install
+cargo install mobilecli
+
+# One-time setup (shows QR code for mobile pairing)
+mobilecli --setup
+
+# Run any command with mobile streaming
+mobilecli
+```
 
 ## How it works
 
-1. Launch the desktop app on your dev machine.
-2. Open Settings -> Connectivity and show the QR code.
-3. Scan with the mobile app to pair and control sessions.
-
-## Supported CLIs
-
-| CLI | Status | Notes |
-| --- | --- | --- |
-| Claude Code | Full Support | Primary CLI, all features |
-| Gemini CLI | Full Support | Session persistence, tool approval |
-| Codex | Full Support | Session management, tool approval |
-| OpenCode | Full Support | Session management |
+1. Run `mobilecli --setup` to start the daemon and show a QR code
+2. Scan with the mobile app to pair
+3. Run `mobilecli` in any terminal to stream that session to your phone
+4. View output and send input from your phone
 
 ## Repo layout
 
-- `desktop/` - Tauri desktop app (frontend + backend bundled).
-- `shared/` - Shared types and helpers.
-
-The mobile app and the marketing website are maintained in separate repos.
+- `cli/` - Rust CLI tool and daemon
+- `mobile/` - React Native mobile app (Expo)
+- `docs/` - Documentation
+- `website/` - Marketing website (Astro)
 
 ## Development
 
-Prereqs: Node.js 18+, Rust 1.70+, Tauri CLI 2.0
+### CLI
 
 ```bash
-cd desktop
+cd cli
+cargo build
+cargo run -- --setup
+```
+
+### Mobile app
+
+```bash
+cd mobile
 npm install
-npm run tauri dev
+npx expo start
 ```
-
-## Build desktop installers
-
-Local build (builds for your current OS only):
-
-```bash
-cd desktop
-./build.sh
-```
-
-Outputs are in `desktop/src-tauri/target/release/bundle/` (dmg, exe, deb, AppImage).
-
-## Release automation
-
-GitHub Actions builds installers for macOS, Windows, and Linux on version tags.
-The website download page pulls the latest GitHub release assets at build time.
 
 ## Security and privacy
 
-MobileCLI is self-hosted by default. Your sessions run locally on your machine and connect directly to your phone over LAN or Tailscale. No relay service is required.
+MobileCLI is self-hosted. Your sessions run locally on your machine and connect directly to your phone over LAN or Tailscale. No relay service or cloud infrastructure is required.
 
 ## License
 
