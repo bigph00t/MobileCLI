@@ -637,6 +637,15 @@ async fn process_client_msg(
         }
         ClientMessage::PtyResize { session_id, cols, rows } => {
             let st = state.read().await;
+            let is_restore = cols == 0 || rows == 0;
+            let has_viewers = st.session_view_counts.get(&session_id).copied().unwrap_or(0) > 0;
+            if !is_restore && !has_viewers {
+                tracing::debug!(
+                    "Ignoring PTY resize for {} (no active mobile viewers)",
+                    session_id
+                );
+                return Ok(());
+            }
             if let Some(session) = st.sessions.get(&session_id) {
                 let _ = session.resize_tx.send((cols, rows));
             }
