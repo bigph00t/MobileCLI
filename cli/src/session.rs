@@ -103,24 +103,23 @@ pub fn get_session(session_id: &str) -> Option<SessionInfo> {
         .find(|s| s.session_id == session_id && is_process_alive(s.pid))
 }
 
-/// Check if a process is still alive
+/// Check if a process is still alive (portable Unix implementation)
 ///
-/// Note: On non-Unix platforms, this always returns true. Stale sessions will
-/// accumulate until manually cleaned or the CLI restarts. This is acceptable
-/// since MobileCLI primarily targets Linux/macOS environments.
+/// Uses kill(pid, 0) signal test which works on both Linux and macOS.
+/// On non-Unix platforms, returns true (conservative default).
+#[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // Check if /proc/PID exists (Linux) or use kill(pid, 0) signal check
-        std::path::Path::new(&format!("/proc/{}", pid)).exists()
-    }
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    // kill with signal 0 checks if process exists without sending a signal
+    kill(Pid::from_raw(pid as i32), None::<Signal>).is_ok()
+}
 
-    #[cfg(not(unix))]
-    {
-        // Conservative default - assume alive on unsupported platforms
-        let _ = pid; // Suppress unused warning
-        true
-    }
+#[cfg(not(unix))]
+fn is_process_alive(pid: u32) -> bool {
+    // Conservative default - assume alive on unsupported platforms
+    let _ = pid; // Suppress unused warning
+    true
 }
 
 /// Show status of active sessions

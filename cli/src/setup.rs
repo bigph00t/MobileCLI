@@ -180,9 +180,13 @@ pub fn get_local_ip() -> Option<String> {
 /// Prompt user for input
 fn prompt(message: &str) -> String {
     print!("{}", message);
-    io::stdout().flush().unwrap();
+    if io::stdout().flush().is_err() {
+        return String::new();
+    }
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+    if io::stdin().read_line(&mut input).is_err() {
+        return String::new();
+    }
     input.trim().to_string()
 }
 

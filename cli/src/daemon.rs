@@ -34,10 +34,25 @@ pub fn is_running() -> bool {
 
     if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            return std::path::Path::new(&format!("/proc/{}", pid)).exists();
+            return is_process_alive(pid);
         }
     }
     false
+}
+
+/// Check if a process is alive (portable Unix implementation)
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    // kill with signal 0 checks if process exists without sending a signal
+    kill(Pid::from_raw(pid as i32), None::<Signal>).is_ok()
+}
+
+#[cfg(not(unix))]
+fn is_process_alive(_pid: u32) -> bool {
+    // Conservative default on non-Unix platforms
+    true
 }
 
 /// Get daemon PID
