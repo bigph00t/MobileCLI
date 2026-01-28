@@ -97,6 +97,9 @@ pub struct PushToken {
     pub platform: String,    // "ios" | "android"
 }
 
+/// Default scrollback buffer size (64KB)
+const DEFAULT_SCROLLBACK_MAX_BYTES: usize = 64 * 1024;
+
 /// Active PTY session
 pub struct PtySession {
     pub session_id: String,
@@ -109,6 +112,10 @@ pub struct PtySession {
     pub waiting_state: Option<WaitingState>,
     pub cli_tracker: CliTracker,
     pub last_wait_hash: Option<u64>,
+    /// Scrollback buffer for session history (for linked terminals)
+    pub scrollback: Vec<u8>,
+    /// Maximum scrollback buffer size
+    pub scrollback_max_bytes: usize,
 }
 
 /// Daemon shared state
@@ -405,6 +412,8 @@ async fn handle_pty_session(
             waiting_state: None,
             cli_tracker,
             last_wait_hash: None,
+            scrollback: Vec::new(),
+            scrollback_max_bytes: DEFAULT_SCROLLBACK_MAX_BYTES,
         });
         st.pty_broadcast.clone()
     };
@@ -431,6 +440,19 @@ async fn handle_pty_session(
                                 if let Some(data) = msg["data"].as_str() {
                                     if let Ok(bytes) = BASE64.decode(data) {
                                         let _ = pty_broadcast.send((session_id.clone(), bytes.clone()));
+
+                                        // Accumulate scrollback for session history (linked terminals)
+                                        {
+                                            let mut st = state.write().await;
+                                            if let Some(session) = st.sessions.get_mut(&session_id) {
+                                                session.scrollback.extend_from_slice(&bytes);
+                                                // Truncate if over limit (keep recent data)
+                                                if session.scrollback.len() > session.scrollback_max_bytes {
+                                                    let excess = session.scrollback.len() - session.scrollback_max_bytes;
+                                                    session.scrollback.drain(..excess);
+                                                }
+                                            }
+                                        }
 
                                         let text = String::from_utf8_lossy(&bytes);
                                         let normalized_chunk = strip_ansi_and_normalize(&text);
@@ -742,6 +764,27 @@ async fn process_client_msg(
             if cleared {
                 broadcast_waiting_cleared(state, &session_id).await;
             }
+        }
+        ClientMessage::GetSessionHistory { session_id, max_bytes } => {
+            let (data, total_bytes) = {
+                let st = state.read().await;
+                if let Some(session) = st.sessions.get(&session_id) {
+                    let max = max_bytes.unwrap_or(session.scrollback_max_bytes);
+                    let total = session.scrollback.len();
+                    let start = if total > max { total - max } else { 0 };
+                    let slice = &session.scrollback[start..];
+                    (BASE64.encode(slice), total)
+                } else {
+                    (String::new(), 0)
+                }
+            };
+
+            let msg = ServerMessage::SessionHistory {
+                session_id,
+                data,
+                total_bytes,
+            };
+            tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
         }
     }
     Ok(())

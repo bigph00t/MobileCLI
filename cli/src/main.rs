@@ -11,6 +11,7 @@
 
 mod daemon;
 mod detection;
+mod link;
 mod platform;
 mod protocol;
 mod pty_wrapper;
@@ -72,6 +73,11 @@ enum Commands {
     },
     /// Stop the background daemon
     Stop,
+    /// Link to an existing session (like screen -x or tmux attach)
+    Link {
+        /// Session ID or name to link to (optional - shows picker if omitted)
+        session: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -142,6 +148,15 @@ async fn main() -> ExitCode {
             Commands::Stop => {
                 stop_daemon();
                 ExitCode::SUCCESS
+            }
+            Commands::Link { session } => {
+                match link::run(session.clone()).await {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{}: {}", "Link error".red().bold(), e);
+                        ExitCode::FAILURE
+                    }
+                }
             }
         };
     }
