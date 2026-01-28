@@ -227,17 +227,20 @@ async fn start_daemon_background() -> std::io::Result<()> {
         .stderr(std::process::Stdio::from(log_file))
         .spawn()?;
 
-    // Wait a bit for daemon to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-    if daemon::is_running() {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Daemon failed to start",
-        ))
+    // Wait for daemon to start with retry
+    let mut delay_ms = 100;
+    for _ in 0..5 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        if daemon::is_running() {
+            return Ok(());
+        }
+        delay_ms = (delay_ms * 2).min(1000); // Exponential backoff, max 1s
     }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "Daemon failed to start (check ~/.mobilecli/daemon.log)",
+    ))
 }
 
 /// Stop the daemon

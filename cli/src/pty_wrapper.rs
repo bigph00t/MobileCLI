@@ -293,7 +293,8 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
             // Check if child exited
             _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
                 if let Ok(Some(status)) = child.try_wait() {
-                    exit_code = status.exit_code() as i32;
+                    // Cap exit code at 255 to prevent i32 overflow
+                    exit_code = status.exit_code().min(255) as i32;
                     break;
                 }
                 if !running.load(Ordering::SeqCst) {
