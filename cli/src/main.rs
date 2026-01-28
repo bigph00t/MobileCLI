@@ -208,6 +208,10 @@ async fn main() -> ExitCode {
 /// Start daemon in background
 async fn start_daemon_background() -> std::io::Result<()> {
     use std::process::Command;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    #[cfg(unix)]
+    use nix::unistd::setsid;
 
     // Get path to self
     let exe = std::env::current_exe()?;
@@ -221,12 +225,24 @@ async fn start_daemon_background() -> std::io::Result<()> {
     let log_file = std::fs::File::create(log_dir.join("daemon.log"))?;
 
     // Spawn daemon as background process with stderr logged for debugging
-    Command::new(&exe)
+    let mut cmd = Command::new(&exe);
+    cmd
         .arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(log_file))
-        .spawn()?;
+        .stderr(std::process::Stdio::from(log_file));
+
+    // Detach from controlling terminal so the daemon survives terminal closes.
+    #[cfg(unix)]
+    {
+        cmd.before_exec(|| {
+            setsid()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            Ok(())
+        });
+    }
+
+    cmd.spawn()?;
 
     // Wait for daemon to start with retry
     let mut delay_ms = 100;
