@@ -122,10 +122,7 @@ pub fn show_status() {
 
     if alive_sessions.is_empty() {
         println!("{}", "No active streaming sessions.".dimmed());
-        println!(
-            "\n{}",
-            "Start a terminal with mobile streaming:".dimmed()
-        );
+        println!("\n{}", "Start a terminal with mobile streaming:".dimmed());
         println!("  {} mobilecli", "$".green());
         println!("  {} mobilecli -n \"My Project\"", "$".green());
         println!("  {} mobilecli claude", "$".green());
@@ -160,11 +157,7 @@ pub fn show_status() {
             session.command,
             session.pid
         );
-        println!(
-            "    {} {}",
-            "Directory:".dimmed(),
-            session.project_path
-        );
+        println!("    {} {}", "Directory:".dimmed(), session.project_path);
         println!();
     }
 }

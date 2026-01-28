@@ -93,8 +93,8 @@ pub struct WaitingState {
 #[derive(Debug, Clone)]
 pub struct PushToken {
     pub token: String,
-    pub token_type: String,  // "expo" | "apns" | "fcm"
-    pub platform: String,    // "ios" | "android"
+    pub token_type: String, // "expo" | "apns" | "fcm"
+    pub platform: String,   // "ios" | "android"
 }
 
 /// Default scrollback buffer size (64KB)
@@ -309,7 +309,8 @@ async fn handle_mobile_client(
         device_id,
         device_name,
     };
-    tx.send(Message::Text(serde_json::to_string(&welcome)?)).await?;
+    tx.send(Message::Text(serde_json::to_string(&welcome)?))
+        .await?;
 
     // Send sessions list
     send_sessions_list(&state, &mut tx).await?;
@@ -402,20 +403,23 @@ async fn handle_pty_session(
         cli_tracker.update_from_command(&command);
 
         let mut st = state.write().await;
-        st.sessions.insert(session_id.clone(), PtySession {
-            session_id: session_id.clone(),
-            name: name.clone(),
-            command,
-            project_path,
-            started_at: Utc::now(),
-            input_tx,
-            resize_tx,
-            waiting_state: None,
-            cli_tracker,
-            last_wait_hash: None,
-            scrollback: VecDeque::new(),
-            scrollback_max_bytes: DEFAULT_SCROLLBACK_MAX_BYTES,
-        });
+        st.sessions.insert(
+            session_id.clone(),
+            PtySession {
+                session_id: session_id.clone(),
+                name: name.clone(),
+                command,
+                project_path,
+                started_at: Utc::now(),
+                input_tx,
+                resize_tx,
+                waiting_state: None,
+                cli_tracker,
+                last_wait_hash: None,
+                scrollback: VecDeque::new(),
+                scrollback_max_bytes: DEFAULT_SCROLLBACK_MAX_BYTES,
+            },
+        );
         st.pty_broadcast.clone()
     };
 
@@ -424,7 +428,8 @@ async fn handle_pty_session(
     persist_sessions_to_file(&state).await;
 
     // Send ACK
-    tx.send(Message::Text(r#"{"type":"registered"}"#.to_string())).await?;
+    tx.send(Message::Text(r#"{"type":"registered"}"#.to_string()))
+        .await?;
 
     // Buffer for detecting waiting state patterns (ANSI-stripped, normalized)
     let mut output_buffer = String::new();
@@ -623,7 +628,10 @@ async fn handle_pty_session(
 async fn process_client_msg(
     msg: ClientMessage,
     state: &SharedState,
-    tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    tx: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match msg {
@@ -636,7 +644,10 @@ async fn process_client_msg(
             let mut st = state.write().await;
             let entry = st.mobile_views.entry(addr).or_default();
             if entry.insert(session_id.clone()) {
-                let count = st.session_view_counts.entry(session_id.clone()).or_insert(0);
+                let count = st
+                    .session_view_counts
+                    .entry(session_id.clone())
+                    .or_insert(0);
                 *count += 1;
             }
         }
@@ -659,16 +670,27 @@ async fn process_client_msg(
                 }
             }
         }
-        ClientMessage::SendInput { session_id, text, .. } => {
+        ClientMessage::SendInput {
+            session_id, text, ..
+        } => {
             let st = state.read().await;
             if let Some(session) = st.sessions.get(&session_id) {
                 let _ = session.input_tx.send(text.into_bytes());
             }
         }
-        ClientMessage::PtyResize { session_id, cols, rows } => {
+        ClientMessage::PtyResize {
+            session_id,
+            cols,
+            rows,
+        } => {
             let st = state.read().await;
             let is_restore = cols == 0 && rows == 0;
-            let has_viewers = st.session_view_counts.get(&session_id).copied().unwrap_or(0) > 0;
+            let has_viewers = st
+                .session_view_counts
+                .get(&session_id)
+                .copied()
+                .unwrap_or(0)
+                > 0;
             if !is_restore && !has_viewers {
                 tracing::debug!(
                     "Ignoring PTY resize for {} (no active mobile viewers)",
@@ -681,12 +703,16 @@ async fn process_client_msg(
             }
         }
         ClientMessage::Ping => {
-            tx.send(Message::Text(serde_json::to_string(&ServerMessage::Pong)?)).await?;
+            tx.send(Message::Text(serde_json::to_string(&ServerMessage::Pong)?))
+                .await?;
         }
         ClientMessage::GetSessions => {
             send_sessions_list(state, tx).await?;
         }
-        ClientMessage::RenameSession { session_id, new_name } => {
+        ClientMessage::RenameSession {
+            session_id,
+            new_name,
+        } => {
             let renamed = {
                 let mut st = state.write().await;
                 if let Some(session) = st.sessions.get_mut(&session_id) {
@@ -720,7 +746,11 @@ async fn process_client_msg(
                 tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
             }
         }
-        ClientMessage::RegisterPushToken { token, token_type, platform } => {
+        ClientMessage::RegisterPushToken {
+            token,
+            token_type,
+            platform,
+        } => {
             let mut st = state.write().await;
             // Remove existing token with same value to avoid duplicates
             st.push_tokens.retain(|t| t.token != token);
@@ -731,7 +761,10 @@ async fn process_client_msg(
             });
             tracing::info!("Registered push token ({}/{})", token_type, platform);
         }
-        ClientMessage::ToolApproval { session_id, response } => {
+        ClientMessage::ToolApproval {
+            session_id,
+            response,
+        } => {
             let maybe_input = {
                 let mut st = state.write().await;
                 if let Some(session) = st.sessions.get_mut(&session_id) {
@@ -766,7 +799,10 @@ async fn process_client_msg(
                 broadcast_waiting_cleared(state, &session_id).await;
             }
         }
-        ClientMessage::GetSessionHistory { session_id, max_bytes } => {
+        ClientMessage::GetSessionHistory {
+            session_id,
+            max_bytes,
+        } => {
             let (data, total_bytes) = {
                 let st = state.read().await;
                 if let Some(session) = st.sessions.get(&session_id) {
@@ -795,19 +831,26 @@ async fn process_client_msg(
 /// Send sessions list to a client
 async fn send_sessions_list(
     state: &SharedState,
-    tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    tx: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let st = state.read().await;
     let port = st.port;
-    let items: Vec<SessionListItem> = st.sessions.values().map(|s| SessionListItem {
-        session_id: s.session_id.clone(),
-        name: s.name.clone(),
-        command: s.command.clone(),
-        project_path: s.project_path.clone(),
-        ws_port: port,
-        started_at: s.started_at.to_rfc3339(),
-        cli_type: s.cli_tracker.current().as_str().to_string(),
-    }).collect();
+    let items: Vec<SessionListItem> = st
+        .sessions
+        .values()
+        .map(|s| SessionListItem {
+            session_id: s.session_id.clone(),
+            name: s.name.clone(),
+            command: s.command.clone(),
+            project_path: s.project_path.clone(),
+            ws_port: port,
+            started_at: s.started_at.to_rfc3339(),
+            cli_type: s.cli_tracker.current().as_str().to_string(),
+        })
+        .collect();
     let msg = ServerMessage::Sessions { sessions: items };
     tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
     Ok(())
@@ -817,15 +860,19 @@ async fn send_sessions_list(
 async fn broadcast_sessions_update(state: &SharedState) {
     let st = state.read().await;
     let port = st.port;
-    let items: Vec<SessionListItem> = st.sessions.values().map(|s| SessionListItem {
-        session_id: s.session_id.clone(),
-        name: s.name.clone(),
-        command: s.command.clone(),
-        project_path: s.project_path.clone(),
-        ws_port: port,
-        started_at: s.started_at.to_rfc3339(),
-        cli_type: s.cli_tracker.current().as_str().to_string(),
-    }).collect();
+    let items: Vec<SessionListItem> = st
+        .sessions
+        .values()
+        .map(|s| SessionListItem {
+            session_id: s.session_id.clone(),
+            name: s.name.clone(),
+            command: s.command.clone(),
+            project_path: s.project_path.clone(),
+            ws_port: port,
+            started_at: s.started_at.to_rfc3339(),
+            cli_type: s.cli_tracker.current().as_str().to_string(),
+        })
+        .collect();
     let msg = ServerMessage::Sessions { sessions: items };
     if let Ok(msg_str) = serde_json::to_string(&msg) {
         for client in st.mobile_clients.values() {
@@ -900,7 +947,10 @@ async fn broadcast_waiting_cleared(state: &SharedState, session_id: &str) {
 /// Send current waiting states to a newly connected mobile client.
 async fn send_waiting_states(
     state: &SharedState,
-    tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    tx: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let st = state.read().await;
     for session in st.sessions.values() {
@@ -950,7 +1000,11 @@ fn truncate_to_max_chars(input: &mut String, max_chars: usize) {
     *input = trimmed;
 }
 
-fn build_notification_text(cli_type: CliType, session_name: &str, event: &crate::detection::WaitEvent) -> (String, String) {
+fn build_notification_text(
+    cli_type: CliType,
+    session_name: &str,
+    event: &crate::detection::WaitEvent,
+) -> (String, String) {
     let cli_label = match cli_type {
         CliType::Claude => "Claude",
         CliType::Codex => "Codex",
@@ -1015,12 +1069,7 @@ async fn restore_pty_size(state: &SharedState, session_id: &str) {
 }
 
 /// Send push notifications to all registered tokens
-async fn send_push_notifications(
-    tokens: &[PushToken],
-    title: &str,
-    body: &str,
-    session_id: &str,
-) {
+async fn send_push_notifications(tokens: &[PushToken], title: &str, body: &str, session_id: &str) {
     if tokens.is_empty() {
         return;
     }

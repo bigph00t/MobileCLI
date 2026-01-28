@@ -113,24 +113,20 @@ async fn main() -> ExitCode {
                 show_status();
                 ExitCode::SUCCESS
             }
-            Commands::Setup => {
-                match run_setup().await {
-                    Ok(_) => ExitCode::SUCCESS,
-                    Err(e) => {
-                        eprintln!("{}: {}", "Setup error".red().bold(), e);
-                        ExitCode::FAILURE
-                    }
+            Commands::Setup => match run_setup().await {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{}: {}", "Setup error".red().bold(), e);
+                    ExitCode::FAILURE
                 }
-            }
-            Commands::Pair => {
-                match show_pair_qr().await {
-                    Ok(_) => ExitCode::SUCCESS,
-                    Err(e) => {
-                        eprintln!("{}: {}", "Error".red().bold(), e);
-                        ExitCode::FAILURE
-                    }
+            },
+            Commands::Pair => match show_pair_qr().await {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{}: {}", "Error".red().bold(), e);
+                    ExitCode::FAILURE
                 }
-            }
+            },
             Commands::Daemon { port } => {
                 if daemon::is_running() {
                     eprintln!("{}", "Daemon is already running".yellow());
@@ -149,15 +145,13 @@ async fn main() -> ExitCode {
                 stop_daemon();
                 ExitCode::SUCCESS
             }
-            Commands::Link { session } => {
-                match link::run(session.clone()).await {
-                    Ok(_) => ExitCode::SUCCESS,
-                    Err(e) => {
-                        eprintln!("{}: {}", "Link error".red().bold(), e);
-                        ExitCode::FAILURE
-                    }
+            Commands::Link { session } => match link::run(session.clone()).await {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{}: {}", "Link error".red().bold(), e);
+                    ExitCode::FAILURE
                 }
-            }
+            },
         };
     }
 
@@ -176,7 +170,10 @@ async fn main() -> ExitCode {
     // Check for first run - show setup wizard
     if setup::is_first_run() && run_args.args.is_empty() {
         println!();
-        println!("{}", "Welcome to MobileCLI! Let's get you set up.".cyan().bold());
+        println!(
+            "{}",
+            "Welcome to MobileCLI! Let's get you set up.".cyan().bold()
+        );
         match run_setup().await {
             Ok(_) => {}
             Err(e) => {
@@ -224,11 +221,11 @@ async fn main() -> ExitCode {
 
 /// Start daemon in background
 async fn start_daemon_background() -> std::io::Result<()> {
-    use std::process::Command;
-    #[cfg(unix)]
-    use std::os::unix::process::CommandExt;
     #[cfg(unix)]
     use nix::unistd::setsid;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
 
     // Get path to self
     let exe = std::env::current_exe()?;
@@ -240,8 +237,7 @@ async fn start_daemon_background() -> std::io::Result<()> {
 
     // Spawn daemon as background process with stderr logged for debugging
     let mut cmd = Command::new(&exe);
-    cmd
-        .arg("daemon")
+    cmd.arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(log_file));
@@ -254,8 +250,7 @@ async fn start_daemon_background() -> std::io::Result<()> {
         // from the parent process. Stdin/stdout/stderr are explicitly redirected above.
         unsafe {
             cmd.pre_exec(|| {
-                setsid()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                setsid().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 Ok(())
             });
         }
@@ -326,7 +321,11 @@ fn show_status() {
     if sessions.is_empty() {
         println!("{}", "  No active sessions".dimmed());
     } else {
-        println!("\n{} {} active session(s):", "Sessions:".bold(), sessions.len());
+        println!(
+            "\n{} {} active session(s):",
+            "Sessions:".bold(),
+            sessions.len()
+        );
         for s in sessions {
             println!(
                 "  {} {} - {}",
@@ -350,7 +349,10 @@ async fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     // Show QR code for pairing
     println!();
-    println!("{}", "Scan this QR code with the MobileCLI app:".cyan().bold());
+    println!(
+        "{}",
+        "Scan this QR code with the MobileCLI app:".cyan().bold()
+    );
     println!();
 
     show_pair_qr().await?;
@@ -393,11 +395,7 @@ async fn show_pair_qr() -> Result<(), Box<dyn std::error::Error>> {
 
         qr::display_session_qr(&info);
     } else {
-        println!(
-            "  {} ws://localhost:{}",
-            "Connect:".dimmed(),
-            port
-        );
+        println!("  {} ws://localhost:{}", "Connect:".dimmed(), port);
     }
 
     Ok(())

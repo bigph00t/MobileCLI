@@ -48,7 +48,8 @@ pub fn default_shell() -> String {
     #[cfg(windows)]
     {
         // Check for PowerShell first (preferred on modern Windows)
-        let powershell = PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+        let powershell =
+            PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
         if powershell.exists() {
             return powershell.to_string_lossy().to_string();
         }
@@ -87,7 +88,11 @@ pub fn is_process_alive(pid: u32) -> bool {
     // OpenProcess and GetExitCodeProcess from Windows API
     #[link(name = "kernel32")]
     extern "system" {
-        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+        fn OpenProcess(
+            dwDesiredAccess: u32,
+            bInheritHandle: i32,
+            dwProcessId: u32,
+        ) -> *mut std::ffi::c_void;
         fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
         fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
     }
@@ -136,7 +141,11 @@ pub fn terminate_process(pid: u32) -> bool {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+        fn OpenProcess(
+            dwDesiredAccess: u32,
+            bInheritHandle: i32,
+            dwProcessId: u32,
+        ) -> *mut std::ffi::c_void;
         fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
         fn TerminateProcess(hProcess: *mut std::ffi::c_void, uExitCode: u32) -> i32;
     }
