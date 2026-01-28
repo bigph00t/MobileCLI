@@ -182,7 +182,7 @@ pub fn path_separator() -> char {
 /// from different operating systems.
 pub fn extract_path_basename(path: &str) -> &str {
     // Handle both Unix (/) and Windows (\) separators
-    path.rsplit(|c| c == '/' || c == '\\')
+    path.rsplit(['/', '\\'])
         .next()
         .unwrap_or(path)
 }

@@ -808,7 +808,7 @@ async fn process_client_msg(
                 if let Some(session) = st.sessions.get(&session_id) {
                     let max = max_bytes.unwrap_or(session.scrollback_max_bytes);
                     let total = session.scrollback.len();
-                    let skip = if total > max { total - max } else { 0 };
+                    let skip = total.saturating_sub(max);
                     // VecDeque doesn't support direct slicing, so collect the tail
                     let bytes: Vec<u8> = session.scrollback.iter().skip(skip).copied().collect();
                     (BASE64.encode(&bytes), total)

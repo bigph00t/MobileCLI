@@ -127,11 +127,7 @@ pub async fn show_pairing_qr() -> Result<(), QrError> {
 /// Display inline QR code for a session (smaller, for embedding in terminal)
 pub fn display_session_qr(info: &ConnectionInfo) {
     println!();
-    println!(
-        "  {} {}",
-        "📱".to_string(),
-        "Scan to connect from mobile:".cyan().bold()
-    );
+    println!("  📱 {}", "Scan to connect from mobile:".cyan().bold());
 
     // Use compact QR format for much smaller QR code
     let qr_data = info.to_compact_qr();
@@ -153,6 +149,7 @@ pub fn display_session_qr(info: &ConnectionInfo) {
         let mut stdout = std::io::stdout();
         for y in (0..width).step_by(2) {
             print!("  ");
+            #[allow(clippy::needless_range_loop)]
             for x in 0..width {
                 let top = modules[y][x];
                 let bottom = if y + 1 < width {
