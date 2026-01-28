@@ -458,10 +458,9 @@ pub fn run_setup_wizard() -> io::Result<Config> {
                 println!();
                 println!("{}", "Tailscale is not logged in.".yellow());
 
-                if prompt_yn("Would you like to login now?", true)
-                    && start_tailscale()? {
-                        ts_status = check_tailscale();
-                    }
+                if prompt_yn("Would you like to login now?", true) && start_tailscale()? {
+                    ts_status = check_tailscale();
+                }
             }
 
             // Get IP
