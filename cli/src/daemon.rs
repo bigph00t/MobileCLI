@@ -14,10 +14,22 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+/// Shared HTTP client for push notifications (lazy initialized with timeout)
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 /// Default WebSocket port
 pub const DEFAULT_PORT: u16 = 9847;
@@ -912,9 +924,8 @@ async fn send_push_notifications(
         return;
     }
 
-    // Send to Expo Push API
-    let client = reqwest::Client::new();
-    match client
+    // Send to Expo Push API (using shared client with timeout)
+    match http_client()
         .post("https://exp.host/--/api/v2/push/send")
         .header("Content-Type", "application/json")
         .json(&messages)
