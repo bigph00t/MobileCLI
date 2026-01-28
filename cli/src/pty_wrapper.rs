@@ -7,7 +7,7 @@
 //! 4. Relays input from daemon (mobile) to the PTY
 //! 5. Handles terminal resize events
 
-use crate::daemon::DEFAULT_PORT;
+use crate::daemon::{get_port, DEFAULT_PORT};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
@@ -75,8 +75,9 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| ".".to_string());
 
-    // Connect to daemon
-    let daemon_url = format!("ws://127.0.0.1:{}", DEFAULT_PORT);
+    // Connect to daemon (use actual port from file, fallback to default)
+    let port = get_port().unwrap_or(DEFAULT_PORT);
+    let daemon_url = format!("ws://127.0.0.1:{}", port);
     let (ws_stream, _) = connect_async(&daemon_url)
         .await
         .map_err(|e| WrapError::DaemonConnection(format!("Failed to connect to daemon: {}", e)))?;

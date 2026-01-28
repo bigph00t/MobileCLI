@@ -15,7 +15,6 @@ mod pty_wrapper;
 mod qr;
 mod session;
 mod setup;
-mod websocket;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -49,14 +48,6 @@ struct RunArgs {
     /// Don't show connection status on startup
     #[arg(long = "quiet", short = 'q')]
     quiet: bool,
-
-    /// Use local network connection (same WiFi)
-    #[arg(long = "local")]
-    use_local: bool,
-
-    /// Use Tailscale VPN connection
-    #[arg(long = "tailscale")]
-    use_tailscale: bool,
 }
 
 #[derive(Subcommand)]
@@ -252,11 +243,12 @@ fn stop_daemon() {
 fn show_status() {
     if daemon::is_running() {
         if let Some(pid) = daemon::get_pid() {
+            let port = daemon::get_port().unwrap_or(daemon::DEFAULT_PORT);
             println!(
                 "{} Daemon running (PID: {}, port: {})",
                 "●".green(),
                 pid,
-                daemon::DEFAULT_PORT
+                port
             );
         }
     } else {
@@ -321,9 +313,12 @@ async fn show_pair_qr() -> Result<(), Box<dyn std::error::Error>> {
         setup::ConnectionMode::Custom(_) => setup::get_connection_ip(&config),
     };
 
+    // Get the actual daemon port (fallback to default if not running)
+    let port = daemon::get_port().unwrap_or(daemon::DEFAULT_PORT);
+
     if let Some(ip) = ip {
         let info = protocol::ConnectionInfo {
-            ws_url: format!("ws://{}:{}", ip, daemon::DEFAULT_PORT),
+            ws_url: format!("ws://{}:{}", ip, port),
             session_id: String::new(), // Not session-specific
             session_name: None,
             encryption_key: None,
@@ -335,7 +330,7 @@ async fn show_pair_qr() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "  {} ws://localhost:{}",
             "Connect:".dimmed(),
-            daemon::DEFAULT_PORT
+            port
         );
     }
 

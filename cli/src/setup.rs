@@ -455,11 +455,41 @@ pub fn get_connection_ip(config: &Config) -> Option<String> {
             status.ip
         }),
         ConnectionMode::Custom(url) => {
-            // Extract host from URL
-            url.strip_prefix("ws://")
+            // Extract host from URL, handling schemes and IPv6
+            // Examples: "ws://192.168.1.1:9847", "wss://[::1]:9847", "192.168.1.1"
+            let url = url.trim();
+
+            // Strip scheme if present
+            let without_scheme = url
+                .strip_prefix("ws://")
                 .or_else(|| url.strip_prefix("wss://"))
-                .and_then(|s| s.split(':').next())
-                .map(|s| s.to_string())
+                .or_else(|| url.strip_prefix("http://"))
+                .or_else(|| url.strip_prefix("https://"))
+                .unwrap_or(url);
+
+            // Handle IPv6 addresses in brackets [::1]:port
+            if without_scheme.starts_with('[') {
+                // IPv6: find the closing bracket
+                if let Some(bracket_end) = without_scheme.find(']') {
+                    // Return the IPv6 address without brackets
+                    return Some(without_scheme[1..bracket_end].to_string());
+                }
+            }
+
+            // For IPv4 or hostname: split on ':' to remove port, or '/' to remove path
+            let host = without_scheme
+                .split(':')
+                .next()
+                .unwrap_or(without_scheme)
+                .split('/')
+                .next()
+                .unwrap_or(without_scheme);
+
+            if host.is_empty() {
+                None
+            } else {
+                Some(host.to_string())
+            }
         }
     }
 }

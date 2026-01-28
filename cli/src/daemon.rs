@@ -25,6 +25,19 @@ fn pid_file() -> PathBuf {
     PathBuf::from(home).join(".mobilecli").join("daemon.pid")
 }
 
+/// Port file path
+fn port_file() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".mobilecli").join("daemon.port")
+}
+
+/// Get the running daemon's port (reads from port file)
+pub fn get_port() -> Option<u16> {
+    std::fs::read_to_string(port_file())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
 /// Check if daemon is running
 pub fn is_running() -> bool {
     let pid_path = pid_file();
@@ -78,15 +91,17 @@ pub struct DaemonState {
     pub sessions: HashMap<String, PtySession>,
     pub mobile_clients: HashMap<SocketAddr, mpsc::UnboundedSender<Message>>,
     pub pty_broadcast: broadcast::Sender<(String, Vec<u8>)>,
+    pub port: u16, // The actual port the daemon is running on
 }
 
 impl DaemonState {
-    pub fn new() -> Self {
+    pub fn new(port: u16) -> Self {
         let (pty_broadcast, _) = broadcast::channel(256);
         Self {
             sessions: HashMap::new(),
             mobile_clients: HashMap::new(),
             pty_broadcast,
+            port,
         }
     }
 }
@@ -102,7 +117,11 @@ pub async fn run(port: u16) -> std::io::Result<()> {
     }
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    let state: SharedState = Arc::new(RwLock::new(DaemonState::new()));
+    // Write port file so wrapper/QR can find the actual port
+    let port_path = port_file();
+    std::fs::write(&port_path, port.to_string())?;
+
+    let state: SharedState = Arc::new(RwLock::new(DaemonState::new(port)));
 
     // Start WebSocket server on all interfaces (0.0.0.0)
     // This is intentional - mobile clients need network access to connect.
@@ -113,6 +132,26 @@ pub async fn run(port: u16) -> std::io::Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     tracing::info!("Daemon WebSocket server on port {}", port);
 
+    // Run the main loop with platform-specific signal handling
+    #[cfg(unix)]
+    run_server_loop_unix(listener, state).await;
+
+    #[cfg(not(unix))]
+    run_server_loop_generic(listener, state).await;
+
+    // Cleanup
+    let _ = std::fs::remove_file(&pid_path);
+    let _ = std::fs::remove_file(&port_path);
+    Ok(())
+}
+
+/// Server loop with Unix signal handling (SIGTERM + Ctrl+C)
+#[cfg(unix)]
+async fn run_server_loop_unix(listener: TcpListener, state: SharedState) {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to set up SIGTERM handler");
+
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -122,15 +161,34 @@ pub async fn run(port: u16) -> std::io::Result<()> {
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Daemon shutting down");
+                tracing::info!("Daemon shutting down (Ctrl+C)");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Daemon shutting down (SIGTERM)");
                 break;
             }
         }
     }
+}
 
-    // Cleanup
-    let _ = std::fs::remove_file(&pid_path);
-    Ok(())
+/// Server loop for non-Unix platforms (Ctrl+C only)
+#[cfg(not(unix))]
+async fn run_server_loop_generic(listener: TcpListener, state: SharedState) {
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                if let Ok((stream, addr)) = result {
+                    let state = state.clone();
+                    tokio::spawn(handle_connection(stream, addr, state));
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Daemon shutting down (Ctrl+C)");
+                break;
+            }
+        }
+    }
 }
 
 /// Handle WebSocket connection (could be mobile client or PTY session)
@@ -140,7 +198,7 @@ async fn handle_connection(
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws = accept_async(stream).await?;
-    let (mut tx, mut rx) = ws.split();
+    let (tx, mut rx) = ws.split();
 
     // Wait for first message to determine client type
     let first_msg = rx.next().await;
@@ -353,6 +411,9 @@ async fn handle_pty_session(
         }
     }
 
+    // Broadcast updated sessions list to all clients
+    broadcast_sessions_update(&state).await;
+
     // Update persisted sessions
     persist_sessions_to_file(&state).await;
 
@@ -367,6 +428,19 @@ async fn process_client_msg(
     tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match msg {
+        ClientMessage::Hello { client_version, .. } => {
+            // Already sent Welcome on connect, but log the client version
+            tracing::debug!("Client hello, version: {}", client_version);
+        }
+        ClientMessage::Subscribe { session_id } => {
+            // Currently all clients receive all session output via broadcast
+            // This is logged for future per-session subscription support
+            tracing::debug!("Client subscribed to session: {}", session_id);
+        }
+        ClientMessage::Unsubscribe { session_id } => {
+            // Currently all clients receive all session output via broadcast
+            tracing::debug!("Client unsubscribed from session: {}", session_id);
+        }
         ClientMessage::SendInput { session_id, text, .. } => {
             let st = state.read().await;
             if let Some(session) = st.sessions.get(&session_id) {
@@ -385,7 +459,40 @@ async fn process_client_msg(
         ClientMessage::GetSessions => {
             send_sessions_list(state, tx).await?;
         }
-        _ => {}
+        ClientMessage::RenameSession { session_id, new_name } => {
+            let renamed = {
+                let mut st = state.write().await;
+                if let Some(session) = st.sessions.get_mut(&session_id) {
+                    session.name = new_name.clone();
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if renamed {
+                // Send confirmation
+                let msg = ServerMessage::SessionRenamed {
+                    session_id: session_id.clone(),
+                    new_name: new_name.clone(),
+                };
+                tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
+
+                // Broadcast updated sessions list to all clients
+                broadcast_sessions_update(state).await;
+
+                // Update persisted sessions file
+                persist_sessions_to_file(state).await;
+
+                tracing::info!("Session {} renamed to '{}'", session_id, new_name);
+            } else {
+                let msg = ServerMessage::Error {
+                    code: "session_not_found".to_string(),
+                    message: format!("Session {} not found", session_id),
+                };
+                tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
+            }
+        }
     }
     Ok(())
 }
@@ -396,12 +503,13 @@ async fn send_sessions_list(
     tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let st = state.read().await;
+    let port = st.port;
     let items: Vec<SessionListItem> = st.sessions.values().map(|s| SessionListItem {
         session_id: s.session_id.clone(),
         name: s.name.clone(),
         command: s.command.clone(),
         project_path: s.project_path.clone(),
-        ws_port: DEFAULT_PORT,
+        ws_port: port,
         started_at: s.started_at.to_rfc3339(),
         cli_type: "terminal".to_string(),
     }).collect();
@@ -413,12 +521,13 @@ async fn send_sessions_list(
 /// Broadcast sessions update to all mobile clients
 async fn broadcast_sessions_update(state: &SharedState) {
     let st = state.read().await;
+    let port = st.port;
     let items: Vec<SessionListItem> = st.sessions.values().map(|s| SessionListItem {
         session_id: s.session_id.clone(),
         name: s.name.clone(),
         command: s.command.clone(),
         project_path: s.project_path.clone(),
-        ws_port: DEFAULT_PORT,
+        ws_port: port,
         started_at: s.started_at.to_rfc3339(),
         cli_type: "terminal".to_string(),
     }).collect();
@@ -433,6 +542,7 @@ async fn broadcast_sessions_update(state: &SharedState) {
 /// Persist daemon sessions to file for status command
 async fn persist_sessions_to_file(state: &SharedState) {
     let st = state.read().await;
+    let port = st.port;
     let sessions: Vec<SessionInfo> = st
         .sessions
         .values()
@@ -442,7 +552,7 @@ async fn persist_sessions_to_file(state: &SharedState) {
             command: s.command.clone(),
             args: vec![],
             project_path: s.project_path.clone(),
-            ws_port: DEFAULT_PORT,
+            ws_port: port,
             pid: std::process::id(), // daemon PID since we manage all sessions
             started_at: s.started_at,
         })
