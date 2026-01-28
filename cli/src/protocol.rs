@@ -180,6 +180,12 @@ impl ConnectionInfo {
 
     /// Encode as compact string for QR code (smaller QR)
     /// Format: mobilecli://host:port?device_id=UUID&device_name=HOSTNAME
+    ///
+    /// Note: This format is for device-level pairing, not session-specific connections.
+    /// The mobile app connects to the device and then fetches the session list via
+    /// GetSessions. This enables multi-device support where one mobile app can link
+    /// to multiple computers. Session-specific QR codes are no longer used as sessions
+    /// are transient and device pairing is persistent.
     pub fn to_compact_qr(&self) -> String {
         // Extract host:port from ws_url
         let host_port = self

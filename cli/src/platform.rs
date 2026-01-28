@@ -81,8 +81,6 @@ pub fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 pub fn is_process_alive(pid: u32) -> bool {
-    use std::ptr::null_mut;
-
     // PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 

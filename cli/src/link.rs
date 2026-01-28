@@ -194,23 +194,33 @@ async fn run_linked_mode(
     // Set up stdin reader
     let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-    // Spawn stdin reader thread
+    // Spawn stdin reader thread with error handling
     std::thread::spawn(move || {
         let mut stdin = io::stdin();
         let mut buf = [0u8; 1024];
         loop {
             match stdin.read(&mut buf) {
-                Ok(0) => break, // EOF
+                Ok(0) => {
+                    // EOF - graceful shutdown
+                    tracing::debug!("stdin EOF, shutting down input reader");
+                    break;
+                }
                 Ok(n) => {
                     // Check for Ctrl+D (EOF character)
                     if buf[..n].contains(&0x04) {
+                        tracing::debug!("Ctrl+D received, disconnecting");
                         break;
                     }
                     if input_tx.send(buf[..n].to_vec()).is_err() {
+                        // Channel closed - main task has shut down
+                        tracing::debug!("Input channel closed, shutting down reader");
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    tracing::debug!("stdin read error: {}, shutting down reader", e);
+                    break;
+                }
             }
         }
     });
