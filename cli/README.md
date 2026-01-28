@@ -13,9 +13,12 @@ cargo build --release
 cp target/release/mobilecli ~/.local/bin/
 ```
 
-## Usage
+## Quick Start
 
 ```bash
+# First time setup (shows QR code for mobile pairing)
+mobilecli setup
+
 # Start your shell with mobile streaming
 mobilecli
 
@@ -23,16 +26,23 @@ mobilecli
 mobilecli htop
 mobilecli claude
 mobilecli vim myfile.txt
+```
 
+## Usage
+
+```bash
 # Name your session (shows up in mobile app)
 mobilecli -n "Work Terminal"
 mobilecli -n "AI Chat" claude
 
-# Specify a port
-mobilecli -p 9850
+# Quiet mode (skip connection status)
+mobilecli --quiet
 
-# Skip QR code display
-mobilecli --no-qr
+# Show active sessions
+mobilecli status
+
+# Show pairing QR code again
+mobilecli pair
 ```
 
 ## Commands
@@ -41,47 +51,60 @@ mobilecli --no-qr
 |---------|-------------|
 | `mobilecli` | Start your default shell with streaming |
 | `mobilecli <cmd>` | Run a command with streaming |
-| `mobilecli status` | Show active streaming sessions |
-| `mobilecli pair` | Generate QR code for mobile pairing |
+| `mobilecli setup` | Run setup wizard and show pairing QR code |
+| `mobilecli status` | Show daemon status and active sessions |
+| `mobilecli pair` | Show QR code for mobile pairing |
+| `mobilecli daemon` | Run the background server (foreground) |
+| `mobilecli stop` | Stop the background daemon |
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <NAME>` | Name for this session (shown in mobile app) |
-| `-p, --port <PORT>` | WebSocket port (default: auto 9847-9857) |
-| `--no-qr` | Don't show QR code on startup |
+| `-q, --quiet` | Don't show connection status on startup |
+| `--local` | Use local network connection (same WiFi) |
+| `--tailscale` | Use Tailscale VPN connection |
 
 ## How It Works
 
-1. When you run `mobilecli`, it spawns your command (or shell) in a PTY
-2. A WebSocket server starts on your local network
-3. A QR code is displayed for easy mobile pairing
-4. All terminal output streams to connected mobile clients
-5. Input from mobile is sent back to the terminal
+1. **Setup**: Run `mobilecli setup` to configure and scan QR code with mobile app
+2. **Daemon**: A background daemon starts automatically and manages all sessions
+3. **Sessions**: Each `mobilecli` terminal registers with the daemon
+4. **Mobile**: Connect once to see all active terminal sessions
+5. **Streaming**: Terminal output streams to mobile, input flows back
+
+```
+Terminal 1 ──┐
+Terminal 2 ──┼──► Daemon (port 9847) ◄──► Mobile App
+Terminal 3 ──┘
+```
 
 ## Mobile App
 
-Scan the QR code with the MobileCLI mobile app or connect manually using the WebSocket URL shown.
+Scan the QR code with the MobileCLI mobile app during setup. The app connects to the daemon and shows all active terminal sessions.
 
 ## Session Management
 
-Sessions are tracked in `~/.mobilecli/sessions.json`. Use `mobilecli status` to see active sessions:
+Active sessions are managed by the daemon. Use `mobilecli status` to see them:
 
 ```bash
 $ mobilecli status
-● 2 active session(s):
+● Daemon running (PID: 12345, port: 9847)
 
-  → claude (15m)
-    WebSocket: ws://localhost:9847
-    Command: claude (PID: 12345)
-    Directory: /home/user/project
-
-  → Work Terminal (5m)
-    WebSocket: ws://localhost:9848
-    Command: bash (PID: 12346)
-    Directory: /home/user/work
+Sessions: 2 active session(s):
+  → claude - /bin/bash
+  → Work Terminal - /bin/bash
 ```
+
+## Security Model
+
+MobileCLI uses network-level access control:
+
+- **Local Network**: Only devices on the same WiFi can connect
+- **Tailscale**: Only authenticated Tailscale network members can connect
+
+The daemon binds to all interfaces (0.0.0.0) intentionally so mobile devices can connect. Security relies on your network configuration, not application-level authentication.
 
 ## Protocol
 
@@ -101,8 +124,17 @@ The WebSocket server uses a JSON protocol compatible with the MobileCLI mobile a
 - `session_info` - Session details
 - `pty_bytes` - Terminal output (base64)
 - `sessions` - List of sessions
+- `session_ended` - Session terminated
 - `session_renamed` - Rename confirmation
 - `pong` - Heartbeat response
+
+## Troubleshooting
+
+If the daemon fails to start, check the log file:
+
+```bash
+cat ~/.mobilecli/daemon.log
+```
 
 ## License
 
