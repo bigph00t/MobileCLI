@@ -6,6 +6,7 @@
 use crate::detection::{
     detect_wait_event, strip_ansi_and_normalize, ApprovalModel, CliTracker, CliType, WaitType,
 };
+use crate::platform;
 use crate::protocol::{ClientMessage, ServerMessage, SessionListItem};
 use crate::session::{self, SessionInfo};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -34,16 +35,14 @@ fn http_client() -> &'static reqwest::Client {
 /// Default WebSocket port
 pub const DEFAULT_PORT: u16 = 9847;
 
-/// PID file path
+/// PID file path (cross-platform)
 fn pid_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".mobilecli").join("daemon.pid")
+    platform::config_dir().join("daemon.pid")
 }
 
-/// Port file path
+/// Port file path (cross-platform)
 fn port_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".mobilecli").join("daemon.port")
+    platform::config_dir().join("daemon.port")
 }
 
 /// Get the running daemon's port (reads from port file)
@@ -68,19 +67,9 @@ pub fn is_running() -> bool {
     false
 }
 
-/// Check if a process is alive (portable Unix implementation)
-#[cfg(unix)]
+/// Check if a process is alive (cross-platform via platform module)
 fn is_process_alive(pid: u32) -> bool {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    // kill with signal 0 checks if process exists without sending a signal
-    kill(Pid::from_raw(pid as i32), None::<Signal>).is_ok()
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    // Conservative default on non-Unix platforms
-    true
+    platform::is_process_alive(pid)
 }
 
 /// Get daemon PID
@@ -131,11 +120,21 @@ pub struct DaemonState {
     pub push_tokens: Vec<PushToken>,
     pub mobile_views: HashMap<SocketAddr, std::collections::HashSet<String>>,
     pub session_view_counts: HashMap<String, usize>,
+    /// Device UUID (for multi-device support)
+    pub device_id: Option<String>,
+    /// Device name (hostname)
+    pub device_name: Option<String>,
 }
 
 impl DaemonState {
     pub fn new(port: u16) -> Self {
         let (pty_broadcast, _) = broadcast::channel(256);
+
+        // Load device info from config
+        let (device_id, device_name) = crate::setup::load_config()
+            .map(|c| (Some(c.device_id), Some(c.device_name)))
+            .unwrap_or((None, None));
+
         Self {
             sessions: HashMap::new(),
             mobile_clients: HashMap::new(),
@@ -144,6 +143,8 @@ impl DaemonState {
             push_tokens: Vec::new(),
             mobile_views: HashMap::new(),
             session_view_counts: HashMap::new(),
+            device_id,
+            device_name,
         }
     }
 }
@@ -289,10 +290,16 @@ async fn handle_mobile_client(
         st.pty_broadcast.subscribe()
     };
 
-    // Send welcome
+    // Send welcome with device info
+    let (device_id, device_name) = {
+        let st = state.read().await;
+        (st.device_id.clone(), st.device_name.clone())
+    };
     let welcome = ServerMessage::Welcome {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         authenticated: true,
+        device_id,
+        device_name,
     };
     tx.send(Message::Text(serde_json::to_string(&welcome)?)).await?;
 
