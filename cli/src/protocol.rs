@@ -41,6 +41,17 @@ pub enum ClientMessage {
         session_id: String,
         new_name: String,
     },
+    /// Register push notification token
+    RegisterPushToken {
+        token: String,
+        token_type: String,  // "expo" | "apns" | "fcm"
+        platform: String,    // "ios" | "android"
+    },
+    /// Tool approval response from mobile
+    ToolApproval {
+        session_id: String,
+        response: String,    // "yes" | "yes_always" | "no"
+    },
 }
 
 /// Messages sent from server to mobile client
@@ -90,6 +101,19 @@ pub enum ServerMessage {
     },
     /// Heartbeat pong
     Pong,
+    /// Session is waiting for user input (tool approval, question, etc.)
+    WaitingForInput {
+        session_id: String,
+        timestamp: String,
+        prompt_content: String,
+        wait_type: String,   // "tool_approval" | "plan_approval" | "question" | "input"
+        cli_type: String,    // "claude" | "terminal"
+    },
+    /// Waiting state cleared (user responded)
+    WaitingCleared {
+        session_id: String,
+        timestamp: String,
+    },
 }
 
 /// Session list item for GetSessions response

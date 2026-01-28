@@ -60,6 +60,9 @@ term_size = "0.3"
 # URL encoding for compact QR
 urlencoding = "2"
 
+# HTTP client for push notifications
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 [profile.release]
 lto = true
 codegen-units = 1
