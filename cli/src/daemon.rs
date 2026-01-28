@@ -129,6 +129,8 @@ pub struct DaemonState {
     pub pty_broadcast: broadcast::Sender<(String, Vec<u8>)>,
     pub port: u16, // The actual port the daemon is running on
     pub push_tokens: Vec<PushToken>,
+    pub mobile_views: HashMap<SocketAddr, std::collections::HashSet<String>>,
+    pub session_view_counts: HashMap<String, usize>,
 }
 
 impl DaemonState {
@@ -140,6 +142,8 @@ impl DaemonState {
             pty_broadcast,
             port,
             push_tokens: Vec::new(),
+            mobile_views: HashMap::new(),
+            session_view_counts: HashMap::new(),
         }
     }
 }
@@ -301,7 +305,7 @@ async fn handle_mobile_client(
     // Process first message if it was a client message
     if let Some(text) = first_msg {
         if let Ok(msg) = serde_json::from_str::<ClientMessage>(&text) {
-            process_client_msg(msg, &state, &mut tx).await?;
+            process_client_msg(msg, &state, &mut tx, addr).await?;
         }
     }
 
@@ -336,7 +340,7 @@ async fn handle_mobile_client(
                 match result {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(msg) = serde_json::from_str::<ClientMessage>(&text) {
-                            process_client_msg(msg, &state, &mut tx).await?;
+                            process_client_msg(msg, &state, &mut tx, addr).await?;
                         }
                     }
                     Some(Ok(Message::Ping(d))) => { let _ = tx.send(Message::Pong(d)).await; }
@@ -348,6 +352,7 @@ async fn handle_mobile_client(
     }
 
     // Unregister
+    cleanup_mobile_views(&state, addr).await;
     state.write().await.mobile_clients.remove(&addr);
     tracing::info!("Mobile client disconnected: {}", addr);
     Ok(())
@@ -361,6 +366,7 @@ async fn handle_pty_session(
     _addr: SocketAddr,
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut exit_code: i32 = 0;
     let session_id = reg_msg["session_id"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -501,6 +507,10 @@ async fn handle_pty_session(
                                         }
                                     }
                                 }
+                            } else if msg["type"].as_str() == Some("session_ended") {
+                                exit_code = msg["exit_code"].as_i64().unwrap_or(0) as i32;
+                                tracing::info!("PTY session {} ended (exit_code={})", session_id, exit_code);
+                                break;
                             }
                         }
                     }
@@ -561,7 +571,7 @@ async fn handle_pty_session(
         // Notify about session end
         let msg = ServerMessage::SessionEnded {
             session_id: session_id.clone(),
-            exit_code: 0,
+            exit_code,
         };
         let msg_str = serde_json::to_string(&msg)?;
         for client in st.mobile_clients.values() {
@@ -584,6 +594,7 @@ async fn process_client_msg(
     msg: ClientMessage,
     state: &SharedState,
     tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    addr: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match msg {
         ClientMessage::Hello { client_version, .. } => {
@@ -591,13 +602,32 @@ async fn process_client_msg(
             tracing::debug!("Client hello, version: {}", client_version);
         }
         ClientMessage::Subscribe { session_id } => {
-            // Currently all clients receive all session output via broadcast
-            // This is logged for future per-session subscription support
             tracing::debug!("Client subscribed to session: {}", session_id);
+            let mut st = state.write().await;
+            let entry = st.mobile_views.entry(addr).or_default();
+            if entry.insert(session_id.clone()) {
+                let count = st.session_view_counts.entry(session_id.clone()).or_insert(0);
+                *count += 1;
+            }
         }
         ClientMessage::Unsubscribe { session_id } => {
-            // Currently all clients receive all session output via broadcast
             tracing::debug!("Client unsubscribed from session: {}", session_id);
+            let mut st = state.write().await;
+            if let Some(entry) = st.mobile_views.get_mut(&addr) {
+                if entry.remove(&session_id) {
+                    if let Some(count) = st.session_view_counts.get_mut(&session_id) {
+                        if *count > 0 {
+                            *count -= 1;
+                        }
+                        if *count == 0 {
+                            st.session_view_counts.remove(&session_id);
+                            drop(st);
+                            restore_pty_size(state, &session_id).await;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
         ClientMessage::SendInput { session_id, text, .. } => {
             let st = state.read().await;
@@ -887,6 +917,40 @@ fn build_notification_text(cli_type: CliType, session_name: &str, event: &crate:
 
     let title_with_session = format!("{} · {}", session_name, title);
     (title_with_session, body)
+}
+
+async fn cleanup_mobile_views(state: &SharedState, addr: SocketAddr) {
+    let sessions_to_restore = {
+        let mut st = state.write().await;
+        let sessions = match st.mobile_views.remove(&addr) {
+            Some(s) => s,
+            None => return,
+        };
+        let mut restore = Vec::new();
+        for session_id in sessions {
+            if let Some(count) = st.session_view_counts.get_mut(&session_id) {
+                if *count > 0 {
+                    *count -= 1;
+                }
+                if *count == 0 {
+                    st.session_view_counts.remove(&session_id);
+                    restore.push(session_id);
+                }
+            }
+        }
+        restore
+    };
+
+    for session_id in sessions_to_restore {
+        restore_pty_size(state, &session_id).await;
+    }
+}
+
+async fn restore_pty_size(state: &SharedState, session_id: &str) {
+    let st = state.read().await;
+    if let Some(session) = st.sessions.get(session_id) {
+        let _ = session.resize_tx.send((0, 0));
+    }
 }
 
 /// Send push notifications to all registered tokens

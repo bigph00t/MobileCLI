@@ -270,9 +270,14 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
                                         msg["cols"].as_u64(),
                                         msg["rows"].as_u64(),
                                     ) {
+                                        let (cols, rows) = if cols == 0 || rows == 0 {
+                                            get_terminal_size()
+                                        } else {
+                                            (cols as u16, rows as u16)
+                                        };
                                         let _ = master.resize(PtySize {
-                                            rows: rows as u16,
-                                            cols: cols as u16,
+                                            rows,
+                                            cols,
                                             pixel_width: 0,
                                             pixel_height: 0,
                                         });
@@ -312,6 +317,13 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 
     // Cleanup
     running.store(false, Ordering::SeqCst);
+
+    // Notify daemon that the session ended (so mobile closes it promptly)
+    let msg = serde_json::json!({
+        "type": "session_ended",
+        "exit_code": exit_code,
+    });
+    let _ = ws_tx.send(Message::Text(msg.to_string())).await;
 
     // Close WebSocket
     let _ = ws_tx.close().await;
