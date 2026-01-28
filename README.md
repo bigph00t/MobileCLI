@@ -51,15 +51,23 @@ Get notified instantly when your CLI needs attention:
 
 ### 1. Install the CLI
 
+**Quick Install (recommended):**
 ```bash
-# From crates.io (coming soon)
+curl -fsSL https://raw.githubusercontent.com/bigph00t/MobileCLI/main/install.sh | bash
+```
+
+**Alternative methods:**
+```bash
+# From crates.io
 cargo install mobilecli
 
-# Or build from source
+# From source
 git clone https://github.com/bigph00t/MobileCLI.git
 cd MobileCLI/cli
 cargo install --path .
 ```
+
+**Manual download:** [GitHub Releases](https://github.com/bigph00t/MobileCLI/releases)
 
 ### 2. Run Setup
 
@@ -148,9 +156,11 @@ mobilecli ssh server
 mobilecli                    # Start your shell with streaming
 mobilecli <command>          # Run command with streaming
 mobilecli -n "Name" <cmd>    # Name the session
-mobilecli --setup            # Run setup wizard, show QR code
+mobilecli setup              # Run setup wizard, show QR code
 mobilecli status             # Show daemon and session status
 mobilecli pair               # Show QR code for pairing
+mobilecli link               # Link to an existing session (like screen -x)
+mobilecli link <session>     # Link to specific session by name/ID
 mobilecli daemon             # Start daemon manually
 mobilecli stop               # Stop the daemon
 ```
@@ -161,14 +171,20 @@ Config stored in `~/.mobilecli/config.json`:
 
 ```json
 {
-  "connection_mode": "local",  // "local" or "tailscale"
-  "port": 9847
+  "device_id": "uuid-string",      // Unique device identifier
+  "device_name": "MacBook-Pro",    // Display name (hostname by default)
+  "connection_mode": "local",      // "local" or "tailscale"
+  "local_ip": "192.168.1.100",
+  "tailscale_ip": null
 }
 ```
 
 **Connection Modes:**
 - **Local** - Connect over your WiFi network (same LAN required)
 - **Tailscale** - Connect over Tailscale VPN (works from anywhere)
+
+**Multi-Device Support:**
+The mobile app supports linking multiple computers. Each computer gets a unique `device_id` on first setup. Scanning a new QR code adds that device to your linked devices list.
 
 ## Mobile App Features
 

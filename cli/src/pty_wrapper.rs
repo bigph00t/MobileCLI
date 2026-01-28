@@ -113,7 +113,11 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
             "{} {} {}",
             "📱".green(),
             "Connected!".green().bold(),
-            format!("Session '{}' is now visible on your phone", config.session_name).dimmed()
+            format!(
+                "Session '{}' is now visible on your phone",
+                config.session_name
+            )
+            .dimmed()
         );
     }
 

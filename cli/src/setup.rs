@@ -98,8 +98,14 @@ pub fn load_config() -> Option<Config> {
         device_id,
         device_name,
         connection_mode: mode,
-        tailscale_ip: json.get("tailscale_ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        local_ip: json.get("local_ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        tailscale_ip: json
+            .get("tailscale_ip")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        local_ip: json
+            .get("local_ip")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     })
 }
 
@@ -160,7 +166,8 @@ pub fn check_tailscale() -> TailscaleStatus {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                let backend_state = json.get("BackendState")
+                let backend_state = json
+                    .get("BackendState")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
@@ -168,7 +175,8 @@ pub fn check_tailscale() -> TailscaleStatus {
                 let logged_in = running && json.get("Self").is_some();
 
                 // Get the Tailscale IP
-                let ip = json.get("TailscaleIPs")
+                let ip = json
+                    .get("TailscaleIPs")
                     .and_then(|v| v.as_array())
                     .and_then(|arr| arr.first())
                     .and_then(|v| v.as_str())
@@ -200,9 +208,7 @@ pub fn check_tailscale() -> TailscaleStatus {
 
 /// Get local IP address
 pub fn get_local_ip() -> Option<String> {
-    local_ip_address::local_ip()
-        .ok()
-        .map(|ip| ip.to_string())
+    local_ip_address::local_ip().ok().map(|ip| ip.to_string())
 }
 
 /// Prompt user for input
@@ -276,7 +282,10 @@ fn install_tailscale_macos() -> io::Result<bool> {
     let brew_available = which::which("brew").is_ok();
 
     if !brew_available {
-        println!("{}", "Homebrew not found. Please install Tailscale manually:".yellow());
+        println!(
+            "{}",
+            "Homebrew not found. Please install Tailscale manually:".yellow()
+        );
         println!("  https://tailscale.com/download/mac");
         return Ok(false);
     }
@@ -316,12 +325,13 @@ fn start_tailscale() -> io::Result<bool> {
 
     // Run tailscale up
     println!("Running: tailscale up");
-    println!("{}", "This will open a browser for authentication.".dimmed());
+    println!(
+        "{}",
+        "This will open a browser for authentication.".dimmed()
+    );
     println!();
 
-    let status = Command::new("tailscale")
-        .arg("up")
-        .status()?;
+    let status = Command::new("tailscale").arg("up").status()?;
 
     if status.success() {
         println!("{}", "✓ Tailscale connected!".green());
@@ -335,19 +345,40 @@ fn start_tailscale() -> io::Result<bool> {
 /// Run the interactive setup wizard
 pub fn run_setup_wizard() -> io::Result<Config> {
     println!();
-    println!("{}", "╔══════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║              📱 MobileCLI Setup Wizard                       ║".cyan());
-    println!("{}", "╚══════════════════════════════════════════════════════════════╝".cyan());
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║              📱 MobileCLI Setup Wizard                       ║".cyan()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════╝".cyan()
+    );
     println!();
     println!("How would you like to connect your mobile device?");
     println!();
-    println!("  {} {} - Same WiFi network (easiest)", "1.".bold(), "Local Network".green());
+    println!(
+        "  {} {} - Same WiFi network (easiest)",
+        "1.".bold(),
+        "Local Network".green()
+    );
     println!("     Good for home/office use");
     println!();
-    println!("  {} {} - Connect from anywhere (recommended)", "2.".bold(), "Tailscale VPN".green());
+    println!(
+        "  {} {} - Connect from anywhere (recommended)",
+        "2.".bold(),
+        "Tailscale VPN".green()
+    );
     println!("     Secure, works on any network");
     println!();
-    println!("  {} {} - Enter your own WebSocket URL", "3.".bold(), "Custom".dimmed());
+    println!(
+        "  {} {} - Enter your own WebSocket URL",
+        "3.".bold(),
+        "Custom".dimmed()
+    );
     println!();
 
     let choice = loop {
@@ -373,7 +404,10 @@ pub fn run_setup_wizard() -> io::Result<Config> {
                 println!();
                 println!("{} Local IP: {}", "✓".green(), ip.cyan());
                 println!();
-                println!("{}", "Make sure your phone is on the same WiFi network.".dimmed());
+                println!(
+                    "{}",
+                    "Make sure your phone is on the same WiFi network.".dimmed()
+                );
             } else {
                 println!();
                 println!("{}", "⚠ Could not detect local IP address".yellow());
@@ -403,8 +437,13 @@ pub fn run_setup_wizard() -> io::Result<Config> {
 
                     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                     let installed = {
-                        println!("{}", "Automatic installation not supported on this OS.".yellow());
-                        println!("Please install Tailscale manually: https://tailscale.com/download");
+                        println!(
+                            "{}",
+                            "Automatic installation not supported on this OS.".yellow()
+                        );
+                        println!(
+                            "Please install Tailscale manually: https://tailscale.com/download"
+                        );
                         false
                     };
 
@@ -419,10 +458,8 @@ pub fn run_setup_wizard() -> io::Result<Config> {
                 println!();
                 println!("{}", "Tailscale is not logged in.".yellow());
 
-                if prompt_yn("Would you like to login now?", true) {
-                    if start_tailscale()? {
-                        ts_status = check_tailscale();
-                    }
+                if prompt_yn("Would you like to login now?", true) && start_tailscale()? {
+                    ts_status = check_tailscale();
                 }
             }
 
@@ -458,12 +495,27 @@ pub fn run_setup_wizard() -> io::Result<Config> {
     save_config(&config)?;
 
     println!();
-    println!("{}", "╔══════════════════════════════════════════════════════════════╗".green());
-    println!("{}", "║                    ✓ Setup Complete!                         ║".green());
-    println!("{}", "╚══════════════════════════════════════════════════════════════╝".green());
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════╗".green()
+    );
+    println!(
+        "{}",
+        "║                    ✓ Setup Complete!                         ║".green()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════╝".green()
+    );
     println!();
-    println!("Run {} to start a terminal session.", "mobilecli".cyan().bold());
-    println!("Run {} to change these settings.", "mobilecli --setup".dimmed());
+    println!(
+        "Run {} to start a terminal session.",
+        "mobilecli".cyan().bold()
+    );
+    println!(
+        "Run {} to change these settings.",
+        "mobilecli --setup".dimmed()
+    );
     println!();
 
     Ok(config)

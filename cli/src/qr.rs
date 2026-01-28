@@ -27,8 +27,7 @@ pub fn get_local_ip() -> Result<String, QrError> {
 
 /// Generate and display a QR code in the terminal
 pub fn display_qr(data: &str) -> Result<(), QrError> {
-    let code = QrCode::new(data.as_bytes())
-        .map_err(|e| QrError::Generation(e.to_string()))?;
+    let code = QrCode::new(data.as_bytes()).map_err(|e| QrError::Generation(e.to_string()))?;
 
     // Use compact 1x1 modules for smaller QR display
     let string = code
@@ -98,34 +97,23 @@ pub async fn show_pairing_qr() -> Result<(), QrError> {
     println!();
     println!(
         "{}",
-        "╔══════════════════════════════════════════════════════════════╗"
-            .cyan()
+        "╔══════════════════════════════════════════════════════════════╗".cyan()
     );
     println!(
         "{}",
-        "║           📱 Scan with MobileCLI app to connect              ║"
-            .cyan()
+        "║           📱 Scan with MobileCLI app to connect              ║".cyan()
     );
     println!(
         "{}",
-        "╚══════════════════════════════════════════════════════════════╝"
-            .cyan()
+        "╚══════════════════════════════════════════════════════════════╝".cyan()
     );
     println!();
 
     display_qr(&info.to_qr_data())?;
 
     println!();
-    println!(
-        "  {} {}",
-        "WebSocket:".dimmed(),
-        info.ws_url.green()
-    );
-    println!(
-        "  {} {}",
-        "Local IP:".dimmed(),
-        local_ip.yellow()
-    );
+    println!("  {} {}", "WebSocket:".dimmed(), info.ws_url.green());
+    println!("  {} {}", "Local IP:".dimmed(), local_ip.yellow());
     println!();
     println!(
         "{}",
@@ -139,11 +127,7 @@ pub async fn show_pairing_qr() -> Result<(), QrError> {
 /// Display inline QR code for a session (smaller, for embedding in terminal)
 pub fn display_session_qr(info: &ConnectionInfo) {
     println!();
-    println!(
-        "  {} {}",
-        "📱".to_string(),
-        "Scan to connect from mobile:".cyan().bold()
-    );
+    println!("  📱 {}", "Scan to connect from mobile:".cyan().bold());
 
     // Use compact QR format for much smaller QR code
     let qr_data = info.to_compact_qr();
@@ -165,9 +149,14 @@ pub fn display_session_qr(info: &ConnectionInfo) {
         let mut stdout = std::io::stdout();
         for y in (0..width).step_by(2) {
             print!("  ");
+            #[allow(clippy::needless_range_loop)]
             for x in 0..width {
                 let top = modules[y][x];
-                let bottom = if y + 1 < width { modules[y + 1][x] } else { false };
+                let bottom = if y + 1 < width {
+                    modules[y + 1][x]
+                } else {
+                    false
+                };
 
                 let ch = match (top, bottom) {
                     (true, true) => '█',
@@ -185,10 +174,6 @@ pub fn display_session_qr(info: &ConnectionInfo) {
     }
 
     println!();
-    println!(
-        "  {} {}",
-        "Or connect to:".dimmed(),
-        info.ws_url.green()
-    );
+    println!("  {} {}", "Or connect to:".dimmed(), info.ws_url.green());
     println!();
 }

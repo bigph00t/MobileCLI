@@ -252,7 +252,11 @@ fn is_tool_approval_prompt(text_lower: &str, model: ApprovalModel) -> bool {
     }
 
     // Explicit tool approval keywords
-    if text_lower.contains("tool") && (text_lower.contains("allow") || text_lower.contains("approve") || text_lower.contains("permission")) {
+    if text_lower.contains("tool")
+        && (text_lower.contains("allow")
+            || text_lower.contains("approve")
+            || text_lower.contains("permission"))
+    {
         return true;
     }
 
@@ -266,7 +270,9 @@ fn is_tool_approval_prompt(text_lower: &str, model: ApprovalModel) -> bool {
     if text_lower.contains("do you want to allow") || text_lower.contains("allow this tool") {
         return true;
     }
-    if text_lower.contains("permission") && (text_lower.contains("granted") || text_lower.contains("required")) {
+    if text_lower.contains("permission")
+        && (text_lower.contains("granted") || text_lower.contains("required"))
+    {
         return true;
     }
 
@@ -284,7 +290,9 @@ fn is_plan_approval_prompt(text_lower: &str, model: ApprovalModel) -> bool {
     }
 
     let has_plan = text_lower.contains("plan") || text_lower.contains("proposed plan");
-    let has_approve = text_lower.contains("approve") || text_lower.contains("approval") || text_lower.contains("review");
+    let has_approve = text_lower.contains("approve")
+        || text_lower.contains("approval")
+        || text_lower.contains("review");
     has_plan && has_approve
 }
 

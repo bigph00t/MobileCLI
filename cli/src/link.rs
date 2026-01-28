@@ -28,7 +28,8 @@ pub async fn run(session_id: Option<String>) -> Result<(), Box<dyn std::error::E
         auth_token: None,
         client_version: env!("CARGO_PKG_VERSION").to_string(),
     };
-    ws.send(Message::Text(serde_json::to_string(&hello)?)).await?;
+    ws.send(Message::Text(serde_json::to_string(&hello)?))
+        .await?;
 
     // Wait for welcome and sessions list
     let mut sessions: Vec<SessionListItem> = Vec::new();
@@ -64,8 +65,8 @@ pub async fn run(session_id: Option<String>) -> Result<(), Box<dyn std::error::E
     let session = if let Some(ref id_or_name) = session_id {
         // Try to find by ID prefix or name
         sessions.iter().find(|s| {
-            s.session_id.starts_with(id_or_name) ||
-            s.name.to_lowercase().contains(&id_or_name.to_lowercase())
+            s.session_id.starts_with(id_or_name)
+                || s.name.to_lowercase().contains(&id_or_name.to_lowercase())
         })
     } else if sessions.len() == 1 {
         // Auto-select if only one session
@@ -96,22 +97,32 @@ pub async fn run(session_id: Option<String>) -> Result<(), Box<dyn std::error::E
 }
 
 /// Interactive session picker
-fn show_session_picker<'a>(sessions: &[&'a SessionListItem]) -> io::Result<Option<&'a SessionListItem>> {
+fn show_session_picker<'a>(
+    sessions: &[&'a SessionListItem],
+) -> io::Result<Option<&'a SessionListItem>> {
     println!();
-    println!("{}", "╔═════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║              MobileCLI - Link to Session                    ║".cyan());
-    println!("{}", "╚═════════════════════════════════════════════════════════════╝".cyan());
+    println!(
+        "{}",
+        "╔═════════════════════════════════════════════════════════════╗".cyan()
+    );
+    println!(
+        "{}",
+        "║              MobileCLI - Link to Session                    ║".cyan()
+    );
+    println!(
+        "{}",
+        "╚═════════════════════════════════════════════════════════════╝".cyan()
+    );
     println!();
     println!("Select a session to link:");
     println!();
 
     for (i, session) in sessions.iter().enumerate() {
-        let age = chrono::Utc::now()
-            .signed_duration_since(
-                chrono::DateTime::parse_from_rfc3339(&session.started_at)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now())
-            );
+        let age = chrono::Utc::now().signed_duration_since(
+            chrono::DateTime::parse_from_rfc3339(&session.started_at)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now()),
+        );
         let age_str = if age.num_hours() > 0 {
             format!("{}h", age.num_hours())
         } else {
@@ -128,7 +139,10 @@ fn show_session_picker<'a>(sessions: &[&'a SessionListItem]) -> io::Result<Optio
     }
 
     println!();
-    print!("Enter session number [1-{}] or 'q' to quit: ", sessions.len());
+    print!(
+        "Enter session number [1-{}] or 'q' to quit: ",
+        sessions.len()
+    );
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -162,20 +176,23 @@ async fn run_linked_mode(
         auth_token: None,
         client_version: env!("CARGO_PKG_VERSION").to_string(),
     };
-    tx.send(Message::Text(serde_json::to_string(&hello)?)).await?;
+    tx.send(Message::Text(serde_json::to_string(&hello)?))
+        .await?;
 
     // Subscribe to session
     let subscribe = ClientMessage::Subscribe {
         session_id: session.session_id.clone(),
     };
-    tx.send(Message::Text(serde_json::to_string(&subscribe)?)).await?;
+    tx.send(Message::Text(serde_json::to_string(&subscribe)?))
+        .await?;
 
     // Request session history
     let history_req = ClientMessage::GetSessionHistory {
         session_id: session.session_id.clone(),
         max_bytes: None,
     };
-    tx.send(Message::Text(serde_json::to_string(&history_req)?)).await?;
+    tx.send(Message::Text(serde_json::to_string(&history_req)?))
+        .await?;
 
     // Set up raw terminal mode (Unix only for now)
     #[cfg(unix)]
@@ -188,7 +205,11 @@ async fn run_linked_mode(
     use std::os::unix::io::AsRawFd;
 
     println!("\r{}", "─".repeat(60).dimmed());
-    println!("\r{} Press {} to disconnect", "Linked:".green().bold(), "Ctrl+D".cyan().bold());
+    println!(
+        "\r{} Press {} to disconnect",
+        "Linked:".green().bold(),
+        "Ctrl+D".cyan().bold()
+    );
     println!("\r{}", "─".repeat(60).dimmed());
 
     // Set up stdin reader
@@ -304,13 +325,13 @@ async fn run_linked_mode(
 /// Set up raw terminal mode (Unix)
 #[cfg(unix)]
 fn setup_raw_mode(fd: i32) -> io::Result<nix::sys::termios::Termios> {
-    use nix::sys::termios::{self, LocalFlags, InputFlags, SetArg};
+    use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg};
     use std::os::fd::BorrowedFd;
 
     // SAFETY: fd is a valid file descriptor from stdin
     let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
-    let original = termios::tcgetattr(borrowed_fd)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let original =
+        termios::tcgetattr(borrowed_fd).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     let mut raw = original.clone();
 

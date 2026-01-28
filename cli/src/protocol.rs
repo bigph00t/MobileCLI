@@ -44,13 +44,13 @@ pub enum ClientMessage {
     /// Register push notification token
     RegisterPushToken {
         token: String,
-        token_type: String,  // "expo" | "apns" | "fcm"
-        platform: String,    // "ios" | "android"
+        token_type: String, // "expo" | "apns" | "fcm"
+        platform: String,   // "ios" | "android"
     },
     /// Tool approval response from mobile
     ToolApproval {
         session_id: String,
-        response: String,    // "yes" | "yes_always" | "no"
+        response: String, // "yes" | "yes_always" | "no"
     },
     /// Request session history (scrollback buffer)
     GetSessionHistory {
@@ -116,8 +116,8 @@ pub enum ServerMessage {
         session_id: String,
         timestamp: String,
         prompt_content: String,
-        wait_type: String,   // "tool_approval" | "plan_approval" | "clarifying_question" | "awaiting_response"
-        cli_type: String,    // "claude" | "codex" | "gemini" | "opencode" | "terminal"
+        wait_type: String, // "tool_approval" | "plan_approval" | "clarifying_question" | "awaiting_response"
+        cli_type: String,  // "claude" | "codex" | "gemini" | "opencode" | "terminal"
     },
     /// Waiting state cleared (user responded)
     WaitingCleared {
@@ -127,7 +127,7 @@ pub enum ServerMessage {
     /// Session history (scrollback buffer) for linked terminals
     SessionHistory {
         session_id: String,
-        data: String,  // base64 encoded
+        data: String, // base64 encoded
         total_bytes: usize,
     },
 }

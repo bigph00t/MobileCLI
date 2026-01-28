@@ -38,7 +38,6 @@ qrcode = "0.14"
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
-nix = { version = "0.29", features = ["term", "signal", "process"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 tracing = "0.1"
@@ -69,6 +68,10 @@ hostname = "0.4"
 
 # HTTP client for push notifications
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Unix-only: PTY terminal control, signals, process management
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["term", "signal", "process"] }
 
 [profile.release]
 lto = true
