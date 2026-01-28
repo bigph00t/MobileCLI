@@ -111,9 +111,9 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
     if !config.quiet {
         println!(
             "{} {} {}",
-            "▶".green().bold(),
-            config.session_name.bold(),
-            "(streaming to mobile)".dimmed()
+            "📱".green(),
+            "Connected!".green().bold(),
+            format!("Session '{}' is now visible on your phone", config.session_name).dimmed()
         );
     }
 
