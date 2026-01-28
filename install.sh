@@ -1,6 +1,9 @@
 #!/bin/bash
-# MobileCLI Installer
+# MobileCLI Installer (Linux & macOS)
 # Usage: curl -fsSL https://raw.githubusercontent.com/bigph00t/MobileCLI/main/install.sh | bash
+#
+# Windows users: install via cargo or download binaries from GitHub Releases.
+#   cargo install --git https://github.com/bigph00t/MobileCLI --path cli
 
 set -euo pipefail
 

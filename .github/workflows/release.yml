@@ -53,7 +53,7 @@ jobs:
 
       - name: Install cross (for cross-compilation)
         if: matrix.cross
-        run: command -v cross || cargo install cross --git https://github.com/cross-rs/cross
+        run: command -v cross || cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
 
       - name: Build (native)
         if: ${{ !matrix.cross }}
