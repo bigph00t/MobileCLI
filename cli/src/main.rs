@@ -10,6 +10,7 @@
 //!   mobilecli --help       # Show help
 
 mod daemon;
+mod detection;
 mod protocol;
 mod pty_wrapper;
 mod qr;

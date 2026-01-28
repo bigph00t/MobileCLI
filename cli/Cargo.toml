@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 local-ip-address = "0.6"
 base64 = "0.22"
 rand = "0.8"
+strip-ansi-escapes = "0.2"
 
 # Terminal colors
 colored = "2"
@@ -59,6 +60,9 @@ term_size = "0.3"
 
 # URL encoding for compact QR
 urlencoding = "2"
+
+# HTTP client for push notifications
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [profile.release]
 lto = true
