@@ -63,8 +63,8 @@ mobilecli pair
 |--------|-------------|
 | `-n, --name <NAME>` | Name for this session (shown in mobile app) |
 | `-q, --quiet` | Don't show connection status on startup |
-| `--local` | Use local network connection (same WiFi) |
-| `--tailscale` | Use Tailscale VPN connection |
+
+Connection mode (Local/Tailscale/Custom) is configured via `mobilecli setup`.
 
 ## How It Works
 

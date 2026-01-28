@@ -137,7 +137,7 @@ pub async fn run(port: u16) -> std::io::Result<()> {
     run_server_loop_unix(listener, state).await;
 
     #[cfg(not(unix))]
-    run_server_loop_generic(listener, state).await;
+    run_server_loop_ctrlc_only(listener, state).await;
 
     // Cleanup
     let _ = std::fs::remove_file(&pid_path);
@@ -150,7 +150,18 @@ pub async fn run(port: u16) -> std::io::Result<()> {
 async fn run_server_loop_unix(listener: TcpListener, state: SharedState) {
     use tokio::signal::unix::{signal, SignalKind};
 
-    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to set up SIGTERM handler");
+    // Try to set up SIGTERM handler, fall back to Ctrl+C only if it fails
+    let sigterm_result = signal(SignalKind::terminate());
+    if sigterm_result.is_err() {
+        tracing::warn!(
+            "Failed to set up SIGTERM handler: {:?}. Only Ctrl+C will work for shutdown.",
+            sigterm_result.err()
+        );
+        // Fall back to generic loop with just Ctrl+C
+        run_server_loop_ctrlc_only(listener, state).await;
+        return;
+    }
+    let mut sigterm = sigterm_result.unwrap();
 
     loop {
         tokio::select! {
@@ -172,9 +183,8 @@ async fn run_server_loop_unix(listener: TcpListener, state: SharedState) {
     }
 }
 
-/// Server loop for non-Unix platforms (Ctrl+C only)
-#[cfg(not(unix))]
-async fn run_server_loop_generic(listener: TcpListener, state: SharedState) {
+/// Server loop with Ctrl+C only (fallback or non-Unix)
+async fn run_server_loop_ctrlc_only(listener: TcpListener, state: SharedState) {
     loop {
         tokio::select! {
             result = listener.accept() => {
