@@ -6,12 +6,13 @@
 use crate::detection::{
     detect_wait_event, strip_ansi_and_normalize, ApprovalModel, CliTracker, CliType, WaitType,
 };
+use crate::platform;
 use crate::protocol::{ClientMessage, ServerMessage, SessionListItem};
 use crate::session::{self, SessionInfo};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -34,16 +35,14 @@ fn http_client() -> &'static reqwest::Client {
 /// Default WebSocket port
 pub const DEFAULT_PORT: u16 = 9847;
 
-/// PID file path
+/// PID file path (cross-platform)
 fn pid_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".mobilecli").join("daemon.pid")
+    platform::config_dir().join("daemon.pid")
 }
 
-/// Port file path
+/// Port file path (cross-platform)
 fn port_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".mobilecli").join("daemon.port")
+    platform::config_dir().join("daemon.port")
 }
 
 /// Get the running daemon's port (reads from port file)
@@ -68,19 +67,9 @@ pub fn is_running() -> bool {
     false
 }
 
-/// Check if a process is alive (portable Unix implementation)
-#[cfg(unix)]
+/// Check if a process is alive (cross-platform via platform module)
 fn is_process_alive(pid: u32) -> bool {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    // kill with signal 0 checks if process exists without sending a signal
-    kill(Pid::from_raw(pid as i32), None::<Signal>).is_ok()
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    // Conservative default on non-Unix platforms
-    true
+    platform::is_process_alive(pid)
 }
 
 /// Get daemon PID
@@ -108,6 +97,9 @@ pub struct PushToken {
     pub platform: String,    // "ios" | "android"
 }
 
+/// Default scrollback buffer size (64KB)
+const DEFAULT_SCROLLBACK_MAX_BYTES: usize = 64 * 1024;
+
 /// Active PTY session
 pub struct PtySession {
     pub session_id: String,
@@ -120,6 +112,11 @@ pub struct PtySession {
     pub waiting_state: Option<WaitingState>,
     pub cli_tracker: CliTracker,
     pub last_wait_hash: Option<u64>,
+    /// Scrollback buffer for session history (for linked terminals)
+    /// Uses VecDeque for efficient front truncation when buffer is full
+    pub scrollback: VecDeque<u8>,
+    /// Maximum scrollback buffer size
+    pub scrollback_max_bytes: usize,
 }
 
 /// Daemon shared state
@@ -131,11 +128,21 @@ pub struct DaemonState {
     pub push_tokens: Vec<PushToken>,
     pub mobile_views: HashMap<SocketAddr, std::collections::HashSet<String>>,
     pub session_view_counts: HashMap<String, usize>,
+    /// Device UUID (for multi-device support)
+    pub device_id: Option<String>,
+    /// Device name (hostname)
+    pub device_name: Option<String>,
 }
 
 impl DaemonState {
     pub fn new(port: u16) -> Self {
         let (pty_broadcast, _) = broadcast::channel(256);
+
+        // Load device info from config
+        let (device_id, device_name) = crate::setup::load_config()
+            .map(|c| (Some(c.device_id), Some(c.device_name)))
+            .unwrap_or((None, None));
+
         Self {
             sessions: HashMap::new(),
             mobile_clients: HashMap::new(),
@@ -144,6 +151,8 @@ impl DaemonState {
             push_tokens: Vec::new(),
             mobile_views: HashMap::new(),
             session_view_counts: HashMap::new(),
+            device_id,
+            device_name,
         }
     }
 }
@@ -289,10 +298,16 @@ async fn handle_mobile_client(
         st.pty_broadcast.subscribe()
     };
 
-    // Send welcome
+    // Send welcome with device info
+    let (device_id, device_name) = {
+        let st = state.read().await;
+        (st.device_id.clone(), st.device_name.clone())
+    };
     let welcome = ServerMessage::Welcome {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         authenticated: true,
+        device_id,
+        device_name,
     };
     tx.send(Message::Text(serde_json::to_string(&welcome)?)).await?;
 
@@ -398,6 +413,8 @@ async fn handle_pty_session(
             waiting_state: None,
             cli_tracker,
             last_wait_hash: None,
+            scrollback: VecDeque::new(),
+            scrollback_max_bytes: DEFAULT_SCROLLBACK_MAX_BYTES,
         });
         st.pty_broadcast.clone()
     };
@@ -424,6 +441,19 @@ async fn handle_pty_session(
                                 if let Some(data) = msg["data"].as_str() {
                                     if let Ok(bytes) = BASE64.decode(data) {
                                         let _ = pty_broadcast.send((session_id.clone(), bytes.clone()));
+
+                                        // Accumulate scrollback for session history (linked terminals)
+                                        // Uses VecDeque for efficient front truncation
+                                        {
+                                            let mut st = state.write().await;
+                                            if let Some(session) = st.sessions.get_mut(&session_id) {
+                                                session.scrollback.extend(bytes.iter().copied());
+                                                // Truncate from front if over limit (VecDeque is O(1) per pop)
+                                                while session.scrollback.len() > session.scrollback_max_bytes {
+                                                    session.scrollback.pop_front();
+                                                }
+                                            }
+                                        }
 
                                         let text = String::from_utf8_lossy(&bytes);
                                         let normalized_chunk = strip_ansi_and_normalize(&text);
@@ -735,6 +765,28 @@ async fn process_client_msg(
             if cleared {
                 broadcast_waiting_cleared(state, &session_id).await;
             }
+        }
+        ClientMessage::GetSessionHistory { session_id, max_bytes } => {
+            let (data, total_bytes) = {
+                let st = state.read().await;
+                if let Some(session) = st.sessions.get(&session_id) {
+                    let max = max_bytes.unwrap_or(session.scrollback_max_bytes);
+                    let total = session.scrollback.len();
+                    let skip = if total > max { total - max } else { 0 };
+                    // VecDeque doesn't support direct slicing, so collect the tail
+                    let bytes: Vec<u8> = session.scrollback.iter().skip(skip).copied().collect();
+                    (BASE64.encode(&bytes), total)
+                } else {
+                    (String::new(), 0)
+                }
+            };
+
+            let msg = ServerMessage::SessionHistory {
+                session_id,
+                data,
+                total_bytes,
+            };
+            tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
         }
     }
     Ok(())

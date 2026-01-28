@@ -2,6 +2,7 @@
 //!
 //! Handles first-time setup and connection configuration.
 
+use crate::platform;
 use colored::Colorize;
 use std::io::{self, Write};
 use std::process::Command;
@@ -20,6 +21,8 @@ pub enum ConnectionMode {
 /// Configuration stored for the CLI
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub device_id: String,
+    pub device_name: String,
     pub connection_mode: ConnectionMode,
     pub tailscale_ip: Option<String>,
     pub local_ip: Option<String>,
@@ -28,11 +31,21 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            device_id: uuid::Uuid::new_v4().to_string(),
+            device_name: get_hostname(),
             connection_mode: ConnectionMode::Local,
             tailscale_ip: None,
             local_ip: None,
         }
     }
+}
+
+/// Get the system hostname for device identification
+pub fn get_hostname() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "Unknown".to_string())
 }
 
 /// Check if this is the first run (no config exists)
@@ -41,12 +54,9 @@ pub fn is_first_run() -> bool {
     !config_path.exists()
 }
 
-/// Get the config file path
+/// Get the config file path (cross-platform)
 fn get_config_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home)
-        .join(".mobilecli")
-        .join("config.json")
+    platform::config_dir().join("config.json")
 }
 
 /// Load saved configuration
@@ -66,7 +76,27 @@ pub fn load_config() -> Option<Config> {
         _ => return None,
     };
 
+    // Get or generate device_id (for backwards compatibility with old configs).
+    // Note: If config is deleted/corrupted, a new device_id is generated, which will
+    // require re-pairing with the mobile app. This is intentional - preserving the
+    // device_id separately would add complexity without much benefit since re-pairing
+    // is a simple QR scan.
+    let device_id = json
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // Get or detect device_name
+    let device_name = json
+        .get("device_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(get_hostname);
+
     Some(Config {
+        device_id,
+        device_name,
         connection_mode: mode,
         tailscale_ip: json.get("tailscale_ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
         local_ip: json.get("local_ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -87,6 +117,8 @@ pub fn save_config(config: &Config) -> io::Result<()> {
     };
 
     let json = serde_json::json!({
+        "device_id": config.device_id,
+        "device_name": config.device_name,
         "connection_mode": mode_str,
         "tailscale_ip": config.tailscale_ip,
         "local_ip": config.local_ip,
@@ -106,12 +138,8 @@ pub struct TailscaleStatus {
 }
 
 pub fn check_tailscale() -> TailscaleStatus {
-    // Check if tailscale command exists
-    let installed = Command::new("which")
-        .arg("tailscale")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    // Check if tailscale command exists (cross-platform using which crate)
+    let installed = which::which("tailscale").is_ok();
 
     if !installed {
         return TailscaleStatus {
@@ -244,12 +272,8 @@ fn install_tailscale_macos() -> io::Result<bool> {
     println!();
     println!("{}", "Installing Tailscale via Homebrew...".cyan());
 
-    // Check if brew is available
-    let brew_available = Command::new("which")
-        .arg("brew")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    // Check if brew is available (cross-platform using which crate)
+    let brew_available = which::which("brew").is_ok();
 
     if !brew_available {
         println!("{}", "Homebrew not found. Please install Tailscale manually:".yellow());

@@ -2,6 +2,7 @@
 //!
 //! Tracks active streaming sessions and persists session info.
 
+use crate::platform;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,12 +21,9 @@ pub struct SessionInfo {
     pub started_at: DateTime<Utc>,
 }
 
-/// Get the sessions file path
+/// Get the sessions file path (cross-platform)
 fn sessions_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".mobilecli")
-        .join("sessions.json")
+    platform::config_dir().join("sessions.json")
 }
 
 /// Ensure the config directory exists
@@ -103,23 +101,11 @@ pub fn get_session(session_id: &str) -> Option<SessionInfo> {
         .find(|s| s.session_id == session_id && is_process_alive(s.pid))
 }
 
-/// Check if a process is still alive (portable Unix implementation)
+/// Check if a process is still alive (cross-platform via platform module)
 ///
-/// Uses kill(pid, 0) signal test which works on both Linux and macOS.
-/// On non-Unix platforms, returns true (conservative default).
-#[cfg(unix)]
+/// Uses kill(pid, 0) signal test on Unix, Windows API on Windows.
 fn is_process_alive(pid: u32) -> bool {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    // kill with signal 0 checks if process exists without sending a signal
-    kill(Pid::from_raw(pid as i32), None::<Signal>).is_ok()
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(pid: u32) -> bool {
-    // Conservative default - assume alive on unsupported platforms
-    let _ = pid; // Suppress unused warning
-    true
+    platform::is_process_alive(pid)
 }
 
 /// Show status of active sessions

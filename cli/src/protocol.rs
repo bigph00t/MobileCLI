@@ -52,6 +52,12 @@ pub enum ClientMessage {
         session_id: String,
         response: String,    // "yes" | "yes_always" | "no"
     },
+    /// Request session history (scrollback buffer)
+    GetSessionHistory {
+        session_id: String,
+        #[serde(default)]
+        max_bytes: Option<usize>,
+    },
 }
 
 /// Messages sent from server to mobile client
@@ -61,6 +67,10 @@ pub enum ServerMessage {
     Welcome {
         server_version: String,
         authenticated: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        device_name: Option<String>,
     },
     Error {
         code: String,
@@ -114,6 +124,12 @@ pub enum ServerMessage {
         session_id: String,
         timestamp: String,
     },
+    /// Session history (scrollback buffer) for linked terminals
+    SessionHistory {
+        session_id: String,
+        data: String,  // base64 encoded
+        total_bytes: usize,
+    },
 }
 
 /// Session list item for GetSessions response
@@ -142,6 +158,12 @@ pub struct ConnectionInfo {
     pub encryption_key: Option<String>,
     /// Server version
     pub version: String,
+    /// Device UUID (for multi-device support)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// Device name/hostname (for display)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 impl ConnectionInfo {
@@ -157,7 +179,13 @@ impl ConnectionInfo {
     }
 
     /// Encode as compact string for QR code (smaller QR)
-    /// Format: mobilecli://host:port/session_id[/name]
+    /// Format: mobilecli://host:port?device_id=UUID&device_name=HOSTNAME
+    ///
+    /// Note: This format is for device-level pairing, not session-specific connections.
+    /// The mobile app connects to the device and then fetches the session list via
+    /// GetSessions. This enables multi-device support where one mobile app can link
+    /// to multiple computers. Session-specific QR codes are no longer used as sessions
+    /// are transient and device pairing is persistent.
     pub fn to_compact_qr(&self) -> String {
         // Extract host:port from ws_url
         let host_port = self
@@ -166,19 +194,23 @@ impl ConnectionInfo {
             .or_else(|| self.ws_url.strip_prefix("wss://"))
             .unwrap_or(&self.ws_url);
 
-        // Use shortened session ID (first 12 chars for better collision resistance)
-        // 12 hex chars = 48 bits of entropy, birthday collision at ~16M sessions
-        let short_id = if self.session_id.len() > 12 {
-            &self.session_id[..12]
-        } else {
-            &self.session_id
-        };
+        // Build URL with query parameters for device info
+        let mut url = format!("mobilecli://{}", host_port);
 
-        // Build compact URL
-        if let Some(name) = &self.session_name {
-            format!("mobilecli://{}/{}/{}", host_port, short_id, urlencoding::encode(name))
-        } else {
-            format!("mobilecli://{}/{}", host_port, short_id)
+        // Add query parameters for device info
+        let mut params = Vec::new();
+        if let Some(id) = &self.device_id {
+            params.push(format!("device_id={}", urlencoding::encode(id)));
         }
+        if let Some(name) = &self.device_name {
+            params.push(format!("device_name={}", urlencoding::encode(name)));
+        }
+
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
+
+        url
     }
 }
