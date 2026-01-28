@@ -20,27 +20,20 @@ success() { echo -e "${GREEN}✓ $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
 error() { echo -e "${RED}✗ $1${NC}" >&2; exit 1; }
 
-# Detect OS and architecture
-detect_platform() {
+# Map OS/arch to Rust target triple (matches release workflow archives)
+detect_target() {
     local os arch
 
-    # Detect OS
-    case "$(uname -s)" in
-        Linux*)  os="linux" ;;
-        Darwin*) os="darwin" ;;
-        MINGW*|MSYS*|CYGWIN*) os="windows" ;;
-        *) error "Unsupported operating system: $(uname -s)" ;;
-    esac
+    os="$(uname -s)"
+    arch="$(uname -m)"
 
-    # Detect architecture
-    case "$(uname -m)" in
-        x86_64|amd64) arch="x86_64" ;;
-        aarch64|arm64) arch="aarch64" ;;
-        armv7l) arch="armv7" ;;
-        *) error "Unsupported architecture: $(uname -m)" ;;
+    case "${os}-${arch}" in
+        Linux-x86_64)    echo "x86_64-unknown-linux-gnu" ;;
+        Linux-aarch64)   echo "aarch64-unknown-linux-gnu" ;;
+        Darwin-x86_64)   echo "x86_64-apple-darwin" ;;
+        Darwin-arm64)    echo "aarch64-apple-darwin" ;;
+        *) error "Unsupported platform: ${os} ${arch}" ;;
     esac
-
-    echo "${os}-${arch}"
 }
 
 # Get the latest release version
@@ -80,9 +73,9 @@ install() {
     info "╚══════════════════════════════════════════════════════════════╝"
     echo
 
-    # Detect platform
-    platform=$(detect_platform)
-    info "Detected platform: $platform"
+    # Detect target
+    platform=$(detect_target)
+    info "Detected target: $platform"
 
     # Get latest version
     info "Fetching latest version..."
