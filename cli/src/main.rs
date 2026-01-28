@@ -203,12 +203,20 @@ async fn start_daemon_background() -> std::io::Result<()> {
     // Get path to self
     let exe = std::env::current_exe()?;
 
-    // Spawn daemon as background process
+    // Create log file for daemon stderr
+    let log_dir = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+    )
+    .join(".mobilecli");
+    std::fs::create_dir_all(&log_dir)?;
+    let log_file = std::fs::File::create(log_dir.join("daemon.log"))?;
+
+    // Spawn daemon as background process with stderr logged for debugging
     Command::new(&exe)
         .arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(log_file))
         .spawn()?;
 
     // Wait a bit for daemon to start

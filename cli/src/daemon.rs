@@ -104,7 +104,12 @@ pub async fn run(port: u16) -> std::io::Result<()> {
 
     let state: SharedState = Arc::new(RwLock::new(DaemonState::new()));
 
-    // Start WebSocket server
+    // Start WebSocket server on all interfaces (0.0.0.0)
+    // This is intentional - mobile clients need network access to connect.
+    // Security model: Access is controlled at the network level via:
+    // - Local network: Only devices on same WiFi can connect
+    // - Tailscale: Only authenticated Tailscale network members can connect
+    // Users explicitly choose their connection mode in setup wizard.
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     tracing::info!("Daemon WebSocket server on port {}", port);
 
@@ -247,7 +252,11 @@ async fn handle_pty_session(
     _addr: SocketAddr,
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let session_id = reg_msg["session_id"].as_str().unwrap_or("").to_string();
+    let session_id = reg_msg["session_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Missing or empty session_id in registration")?
+        .to_string();
     let name = reg_msg["name"].as_str().unwrap_or("Terminal").to_string();
     let command = reg_msg["command"].as_str().unwrap_or("shell").to_string();
     let project_path = reg_msg["project_path"].as_str().unwrap_or("").to_string();

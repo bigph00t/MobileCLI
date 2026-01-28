@@ -203,17 +203,28 @@ fn prompt_yn(message: &str, default: bool) -> bool {
 }
 
 /// Install Tailscale (Linux)
+///
+/// Security note: Downloads and executes the official Tailscale install script.
+/// User is prompted for confirmation before execution. For additional security,
+/// users can manually install via their package manager or verify the script at
+/// https://tailscale.com/install.sh before running.
 fn install_tailscale_linux() -> io::Result<bool> {
     println!();
     println!("{}", "Installing Tailscale...".cyan());
-    println!("This will run: curl -fsSL https://tailscale.com/install.sh | sh");
+    println!("This will download and run the official Tailscale installer.");
+    println!("Script URL: {}", "https://tailscale.com/install.sh".cyan());
+    println!();
+    println!(
+        "{}",
+        "Alternatively, install manually: https://tailscale.com/download/linux".dimmed()
+    );
     println!();
 
-    if !prompt_yn("Continue?", true) {
+    if !prompt_yn("Download and run installer?", true) {
         return Ok(false);
     }
 
-    // Download and run install script
+    // Download and run install script (user has confirmed)
     let status = Command::new("sh")
         .arg("-c")
         .arg("curl -fsSL https://tailscale.com/install.sh | sh")
