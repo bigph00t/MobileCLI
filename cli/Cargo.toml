@@ -1,0 +1,66 @@
+[package]
+name = "mobilecli"
+version = "0.1.0"
+description = "Stream your terminal CLIs to your phone - shell hook edition"
+authors = ["bigphoot"]
+edition = "2021"
+rust-version = "1.70"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/bigphoot/MobileCLI"
+keywords = ["terminal", "mobile", "cli", "streaming", "pty"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "mobilecli"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# PTY for spawning commands
+portable-pty = "0.8"
+
+# WebSocket server
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# QR code generation (terminal)
+qrcode = "0.14"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+nix = { version = "0.29", features = ["term", "signal", "process"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+local-ip-address = "0.6"
+base64 = "0.22"
+rand = "0.8"
+
+# Terminal colors
+colored = "2"
+
+# Signal handling
+ctrlc = "3"
+
+# Command resolution
+which = "6"
+term_size = "0.3"
+
+# URL encoding for compact QR
+urlencoding = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
