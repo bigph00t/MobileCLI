@@ -57,12 +57,20 @@ pub fn generate_connection_info(
 ) -> Result<ConnectionInfo, QrError> {
     let local_ip = get_local_ip()?;
 
+    // Load device info from config
+    let config = crate::setup::load_config();
+    let (device_id, device_name) = config
+        .map(|c| (Some(c.device_id), Some(c.device_name)))
+        .unwrap_or((None, None));
+
     Ok(ConnectionInfo {
         ws_url: format!("ws://{}:{}", local_ip, ws_port),
         session_id: session_id.to_string(),
         session_name: None,
         encryption_key,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        device_id,
+        device_name,
     })
 }
 
@@ -71,12 +79,20 @@ pub async fn show_pairing_qr() -> Result<(), QrError> {
     let local_ip = get_local_ip()?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
+    // Load device info from config
+    let config = crate::setup::load_config();
+    let (device_id, device_name) = config
+        .map(|c| (Some(c.device_id), Some(c.device_name)))
+        .unwrap_or((None, None));
+
     let info = ConnectionInfo {
         ws_url: format!("ws://{}:{}", local_ip, DEFAULT_WS_PORT),
         session_id,
         session_name: None,
         encryption_key: None, // TODO: Add encryption
         version: env!("CARGO_PKG_VERSION").to_string(),
+        device_id,
+        device_name,
     };
 
     println!();

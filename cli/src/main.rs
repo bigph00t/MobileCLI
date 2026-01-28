@@ -11,6 +11,8 @@
 
 mod daemon;
 mod detection;
+mod link;
+mod platform;
 mod protocol;
 mod pty_wrapper;
 mod qr;
@@ -71,6 +73,11 @@ enum Commands {
     },
     /// Stop the background daemon
     Stop,
+    /// Link to an existing session (like screen -x or tmux attach)
+    Link {
+        /// Session ID or name to link to (optional - shows picker if omitted)
+        session: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -142,6 +149,15 @@ async fn main() -> ExitCode {
                 stop_daemon();
                 ExitCode::SUCCESS
             }
+            Commands::Link { session } => {
+                match link::run(session.clone()).await {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{}: {}", "Link error".red().bold(), e);
+                        ExitCode::FAILURE
+                    }
+                }
+            }
         };
     }
 
@@ -172,7 +188,8 @@ async fn main() -> ExitCode {
 
     // Determine what command to run
     let (command, args) = if run_args.args.is_empty() {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        // Use cross-platform shell detection
+        let shell = platform::default_shell();
         (shell, vec![])
     } else {
         let mut args = run_args.args;
@@ -216,11 +233,8 @@ async fn start_daemon_background() -> std::io::Result<()> {
     // Get path to self
     let exe = std::env::current_exe()?;
 
-    // Create log file for daemon stderr
-    let log_dir = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-    )
-    .join(".mobilecli");
+    // Create log file for daemon stderr (cross-platform config directory)
+    let log_dir = platform::config_dir();
     std::fs::create_dir_all(&log_dir)?;
     let log_file = std::fs::File::create(log_dir.join("daemon.log"))?;
 
@@ -235,11 +249,24 @@ async fn start_daemon_background() -> std::io::Result<()> {
     // Detach from controlling terminal so the daemon survives terminal closes.
     #[cfg(unix)]
     {
-        cmd.before_exec(|| {
-            setsid()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            Ok(())
-        });
+        // SAFETY: setsid() is async-signal-safe and does not call any non-reentrant functions
+        unsafe {
+            cmd.pre_exec(|| {
+                setsid()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                Ok(())
+            });
+        }
+    }
+
+    // Windows: Use CREATE_NO_WINDOW and DETACHED_PROCESS flags
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW = 0x08000000, DETACHED_PROCESS = 0x00000008
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
     }
 
     cmd.spawn()?;
@@ -263,14 +290,12 @@ async fn start_daemon_background() -> std::io::Result<()> {
 /// Stop the daemon
 fn stop_daemon() {
     if let Some(pid) = daemon::get_pid() {
-        // Send SIGTERM
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid;
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+        // Terminate process (cross-platform)
+        if platform::terminate_process(pid) {
+            println!("{} Daemon stopped", "✓".green());
+        } else {
+            println!("{}", "Failed to stop daemon".red());
         }
-        println!("{} Daemon stopped", "✓".green());
     } else {
         println!("{}", "Daemon is not running".dimmed());
     }
@@ -333,7 +358,7 @@ async fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Show QR code for pairing
 async fn show_pair_qr() -> Result<(), Box<dyn std::error::Error>> {
-    // Get connection IP
+    // Get connection config (includes device_id and device_name)
     let config = setup::load_config().unwrap_or_default();
 
     let ip = match &config.connection_mode {
@@ -360,6 +385,8 @@ async fn show_pair_qr() -> Result<(), Box<dyn std::error::Error>> {
             session_name: None,
             encryption_key: None,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            device_id: Some(config.device_id),
+            device_name: Some(config.device_name),
         };
 
         qr::display_session_qr(&info);
