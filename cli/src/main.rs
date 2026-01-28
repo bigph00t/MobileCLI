@@ -48,6 +48,10 @@ struct RunArgs {
     /// Don't show connection status on startup
     #[arg(long = "quiet", short = 'q')]
     quiet: bool,
+
+    /// Run setup wizard and show QR code for pairing
+    #[arg(long = "setup")]
+    setup: bool,
 }
 
 #[derive(Subcommand)]
@@ -80,6 +84,19 @@ async fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
+
+    // Handle --setup flag (shortcut for setup subcommand)
+    if let Some(ref run_args) = cli.run_args {
+        if run_args.setup {
+            return match run_setup().await {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{}: {}", "Setup error".red().bold(), e);
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
 
     // Handle subcommands
     if let Some(command) = &cli.command {

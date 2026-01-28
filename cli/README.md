@@ -17,16 +17,13 @@ cp target/release/mobilecli ~/.local/bin/
 
 ```bash
 # First time setup (shows QR code for mobile pairing)
-mobilecli setup
+mobilecli --setup
 
 # Start your shell with mobile streaming
 mobilecli
-
-# Run a specific command
-mobilecli htop
-mobilecli claude
-mobilecli vim myfile.txt
 ```
+
+That's it! Your terminal is now accessible from your phone.
 
 ## Usage
 
@@ -50,25 +47,24 @@ mobilecli pair
 | Command | Description |
 |---------|-------------|
 | `mobilecli` | Start your default shell with streaming |
-| `mobilecli <cmd>` | Run a command with streaming |
-| `mobilecli setup` | Run setup wizard and show pairing QR code |
+| `mobilecli --setup` | Run setup wizard and show pairing QR code |
 | `mobilecli status` | Show daemon status and active sessions |
 | `mobilecli pair` | Show QR code for mobile pairing |
-| `mobilecli daemon` | Run the background server (foreground) |
 | `mobilecli stop` | Stop the background daemon |
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
+| `--setup` | Run setup wizard and show pairing QR code |
 | `-n, --name <NAME>` | Name for this session (shown in mobile app) |
 | `-q, --quiet` | Don't show connection status on startup |
 
-Connection mode (Local/Tailscale/Custom) is configured via `mobilecli setup`.
+Connection mode (Local/Tailscale/Custom) is configured via `mobilecli --setup`.
 
 ## How It Works
 
-1. **Setup**: Run `mobilecli setup` to configure and scan QR code with mobile app
+1. **Setup**: Run `mobilecli --setup` to configure and scan QR code with mobile app
 2. **Daemon**: A background daemon starts automatically and manages all sessions
 3. **Sessions**: Each `mobilecli` terminal registers with the daemon
 4. **Mobile**: Connect once to see all active terminal sessions
