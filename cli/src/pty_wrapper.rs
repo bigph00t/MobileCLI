@@ -1,28 +1,23 @@
-//! PTY wrapper - spawns commands in a PTY with mobile streaming
+//! PTY wrapper - spawns commands in a PTY and streams to the daemon
 //!
-//! This is the core module that:
+//! This module:
 //! 1. Spawns the target command (or shell) in a PTY we control
-//! 2. Starts a WebSocket server for mobile connections
-//! 3. Streams PTY output to both local terminal AND mobile
-//! 4. Relays input from mobile to the PTY
+//! 2. Connects to the daemon via WebSocket
+//! 3. Streams PTY output to both local terminal AND daemon
+//! 4. Relays input from daemon (mobile) to the PTY
 //! 5. Handles terminal resize events
 
-use crate::protocol::ConnectionInfo;
-use crate::qr;
-use crate::session::{self, SessionInfo};
-use crate::websocket::WsServer;
-use chrono::Utc;
+use crate::daemon::DEFAULT_PORT;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use colored::Colorize;
+use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
-
-/// Default port range for WebSocket server
-const DEFAULT_PORT_START: u16 = 9847;
-const DEFAULT_PORT_END: u16 = 9857;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Error, Debug)]
 pub enum WrapError {
@@ -32,10 +27,8 @@ pub enum WrapError {
     Pty(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("WebSocket error: {0}")]
-    WebSocket(String),
-    #[error("No available port in range {0}-{1}")]
-    NoAvailablePort(u16, u16),
+    #[error("Daemon connection error: {0}")]
+    DaemonConnection(String),
 }
 
 /// Configuration for running a wrapped command
@@ -43,10 +36,7 @@ pub struct WrapConfig {
     pub command: String,
     pub args: Vec<String>,
     pub session_name: String,
-    pub port: Option<u16>,
-    pub show_qr: bool,
-    /// IP address to use in QR code (from setup config)
-    pub connection_ip: Option<String>,
+    pub quiet: bool,
 }
 
 /// Resolve a command to its full path
@@ -71,79 +61,58 @@ fn get_terminal_size() -> (u16, u16) {
     (80, 24)
 }
 
-/// Find an available port in the default range
-async fn find_available_port(preferred: Option<u16>) -> Result<u16, WrapError> {
-    if let Some(port) = preferred {
-        // Try the preferred port
-        if tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
-            .await
-            .is_ok()
-        {
-            return Ok(port);
-        }
-    }
-
-    // Try ports in the default range
-    for port in DEFAULT_PORT_START..=DEFAULT_PORT_END {
-        if tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
-            .await
-            .is_ok()
-        {
-            return Ok(port);
-        }
-    }
-
-    Err(WrapError::NoAvailablePort(DEFAULT_PORT_START, DEFAULT_PORT_END))
-}
-
-/// Run a command wrapped with mobile streaming
+/// Run a command wrapped with mobile streaming via daemon
 pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
     // Resolve the command path
     let cmd_path = resolve_command(&config.command)
         .ok_or_else(|| WrapError::CommandNotFound(config.command.clone()))?;
 
-    // Generate session ID
-    let session_id = uuid::Uuid::new_v4().to_string();
+    // Generate session ID (12 chars for better collision resistance)
+    let session_id = uuid::Uuid::new_v4().to_string()[..12].to_string();
 
     // Get current working directory
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| ".".to_string());
 
-    // Find available port
-    let ws_port = find_available_port(config.port).await?;
-
-    // Start WebSocket server
-    let (ws_server, mut ws_channels) = WsServer::start(session_id.clone(), ws_port)
+    // Connect to daemon
+    let daemon_url = format!("ws://127.0.0.1:{}", DEFAULT_PORT);
+    let (ws_stream, _) = connect_async(&daemon_url)
         .await
-        .map_err(|e| WrapError::WebSocket(e.to_string()))?;
+        .map_err(|e| WrapError::DaemonConnection(format!("Failed to connect to daemon: {}", e)))?;
 
-    // Register session
-    let session_info = SessionInfo {
-        session_id: session_id.clone(),
-        name: config.session_name.clone(),
-        command: config.command.clone(),
-        args: config.args.clone(),
-        project_path: cwd.clone(),
-        ws_port,
-        pid: std::process::id(),
-        started_at: Utc::now(),
-    };
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    if let Err(e) = session::register_session(session_info) {
-        tracing::warn!("Failed to register session: {}", e);
+    // Register with daemon as a PTY session
+    let register_msg = serde_json::json!({
+        "type": "register_pty",
+        "session_id": session_id,
+        "name": config.session_name,
+        "command": config.command,
+        "project_path": cwd,
+    });
+    ws_tx
+        .send(Message::Text(register_msg.to_string()))
+        .await
+        .map_err(|e| WrapError::DaemonConnection(format!("Failed to register: {}", e)))?;
+
+    // Wait for registration acknowledgment
+    if let Some(Ok(Message::Text(text))) = ws_rx.next().await {
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+            if msg["type"].as_str() != Some("registered") {
+                return Err(WrapError::DaemonConnection(
+                    "Unexpected response from daemon".to_string(),
+                ));
+            }
+        }
     }
 
-    // Show connection info
-    if config.show_qr {
-        print_connection_banner(&config.session_name, &session_id, ws_port, config.connection_ip.as_deref());
-    } else {
+    if !config.quiet {
         println!(
-            "{} {} {} {}",
+            "{} {} {}",
             "▶".green().bold(),
             config.session_name.bold(),
-            "streaming on".dimmed(),
-            format!("ws://localhost:{}", ws_port).cyan()
+            "(streaming to mobile)".dimmed()
         );
     }
 
@@ -166,7 +135,10 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
     cmd.cwd(&cwd);
 
     // Set up environment for interactive shell
-    cmd.env("TERM", std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()));
+    cmd.env(
+        "TERM",
+        std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()),
+    );
 
     // Spawn the command
     let mut child = pair
@@ -216,7 +188,10 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
     if let Err(e) = ctrlc::set_handler(move || {
         running_ctrlc.store(false, Ordering::SeqCst);
     }) {
-        tracing::warn!("Failed to set Ctrl+C handler: {}. Graceful shutdown may not work.", e);
+        tracing::warn!(
+            "Failed to set Ctrl+C handler: {}. Graceful shutdown may not work.",
+            e
+        );
     }
 
     // Set up stdin reading (for local terminal input)
@@ -245,7 +220,7 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 
     // Main event loop
     let mut stdout = std::io::stdout();
-    let exit_code: i32;
+    let mut exit_code: i32 = 0;
 
     loop {
         tokio::select! {
@@ -255,8 +230,14 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
                 let _ = stdout.write_all(&data);
                 let _ = stdout.flush();
 
-                // Broadcast to mobile clients
-                ws_server.broadcast_pty_output(&data);
+                // Send to daemon
+                let msg = serde_json::json!({
+                    "type": "pty_output",
+                    "data": BASE64.encode(&data),
+                });
+                if ws_tx.send(Message::Text(msg.to_string())).await.is_err() {
+                    tracing::debug!("Failed to send PTY output to daemon");
+                }
             }
 
             // Local stdin input
@@ -267,22 +248,45 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
                 let _ = writer.flush();
             }
 
-            // Input from mobile
-            Some(input) = ws_channels.input_rx.recv() => {
-                if let Err(e) = writer.write_all(input.as_bytes()) {
-                    tracing::debug!("Failed to write mobile input to PTY: {}", e);
+            // Messages from daemon (input/resize from mobile)
+            result = ws_rx.next() => {
+                match result {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                            match msg["type"].as_str() {
+                                Some("input") => {
+                                    if let Some(data) = msg["data"].as_str() {
+                                        if let Ok(bytes) = BASE64.decode(data) {
+                                            if let Err(e) = writer.write_all(&bytes) {
+                                                tracing::debug!("Failed to write mobile input to PTY: {}", e);
+                                            }
+                                            let _ = writer.flush();
+                                        }
+                                    }
+                                }
+                                Some("resize") => {
+                                    if let (Some(cols), Some(rows)) = (
+                                        msg["cols"].as_u64(),
+                                        msg["rows"].as_u64(),
+                                    ) {
+                                        let _ = master.resize(PtySize {
+                                            rows: rows as u16,
+                                            cols: cols as u16,
+                                            pixel_width: 0,
+                                            pixel_height: 0,
+                                        });
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        tracing::debug!("Daemon connection closed");
+                        break;
+                    }
+                    _ => {}
                 }
-                let _ = writer.flush();
-            }
-
-            // Resize from mobile
-            Some((cols, rows)) = ws_channels.resize_rx.recv() => {
-                let _ = master.resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
             }
 
             // Check if child exited
@@ -306,15 +310,12 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
 
     // Cleanup
     running.store(false, Ordering::SeqCst);
-    ws_server.shutdown();
+
+    // Close WebSocket
+    let _ = ws_tx.close().await;
 
     // Wait for reader thread
     let _ = reader_handle.join();
-
-    // Unregister session
-    if let Err(e) = session::unregister_session(&session_id) {
-        tracing::warn!("Failed to unregister session: {}", e);
-    }
 
     // Print exit message
     println!();
@@ -327,58 +328,6 @@ pub async fn run_wrapped(config: WrapConfig) -> Result<i32, WrapError> {
     }
 
     Ok(exit_code)
-}
-
-/// Print the connection banner when starting a session
-fn print_connection_banner(session_name: &str, session_id: &str, ws_port: u16, connection_ip: Option<&str>) {
-    println!();
-    println!(
-        "{}",
-        "╔══════════════════════════════════════════════════════════════╗"
-            .cyan()
-    );
-    println!(
-        "{}  {} {}",
-        "║".cyan(),
-        "📱 MobileCLI".bold(),
-        format!("- {} ", session_name).dimmed(),
-    );
-    println!(
-        "{}",
-        "╚══════════════════════════════════════════════════════════════╝"
-            .cyan()
-    );
-
-    // Use provided IP or fall back to local IP detection
-    let ip = connection_ip
-        .map(|s| s.to_string())
-        .or_else(|| qr::get_local_ip().ok());
-
-    if let Some(ip) = ip {
-        let info = ConnectionInfo {
-            ws_url: format!("ws://{}:{}", ip, ws_port),
-            session_id: session_id.to_string(),
-            session_name: Some(session_name.to_string()),
-            encryption_key: None,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-
-        qr::display_session_qr(&info);
-    } else {
-        println!(
-            "  {} ws://localhost:{}",
-            "Connect:".dimmed(),
-            ws_port
-        );
-        println!();
-    }
-
-    println!(
-        "{}",
-        "────────────────────────────────────────────────────────────────"
-            .dimmed()
-    );
-    println!();
 }
 
 /// Set up raw terminal mode for proper input handling

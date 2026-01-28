@@ -1,0 +1,429 @@
+//! Background daemon for MobileCLI
+//!
+//! Single WebSocket server that all terminal sessions stream to.
+//! Mobile connects once and sees all active sessions.
+
+use crate::protocol::{ClientMessage, ServerMessage, SessionListItem};
+use crate::session::{self, SessionInfo};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use chrono::Utc;
+use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+/// Default WebSocket port
+pub const DEFAULT_PORT: u16 = 9847;
+
+/// PID file path
+fn pid_file() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".mobilecli").join("daemon.pid")
+}
+
+/// Check if daemon is running
+pub fn is_running() -> bool {
+    let pid_path = pid_file();
+    if !pid_path.exists() {
+        return false;
+    }
+
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            return std::path::Path::new(&format!("/proc/{}", pid)).exists();
+        }
+    }
+    false
+}
+
+/// Get daemon PID
+pub fn get_pid() -> Option<u32> {
+    std::fs::read_to_string(pid_file())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// Active PTY session
+pub struct PtySession {
+    pub session_id: String,
+    pub name: String,
+    pub command: String,
+    pub project_path: String,
+    pub started_at: chrono::DateTime<Utc>,
+    pub input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    pub resize_tx: mpsc::UnboundedSender<(u16, u16)>,
+}
+
+/// Daemon shared state
+pub struct DaemonState {
+    pub sessions: HashMap<String, PtySession>,
+    pub mobile_clients: HashMap<SocketAddr, mpsc::UnboundedSender<Message>>,
+    pub pty_broadcast: broadcast::Sender<(String, Vec<u8>)>,
+}
+
+impl DaemonState {
+    pub fn new() -> Self {
+        let (pty_broadcast, _) = broadcast::channel(256);
+        Self {
+            sessions: HashMap::new(),
+            mobile_clients: HashMap::new(),
+            pty_broadcast,
+        }
+    }
+}
+
+pub type SharedState = Arc<RwLock<DaemonState>>;
+
+/// Start the daemon (blocking - run in background)
+pub async fn run(port: u16) -> std::io::Result<()> {
+    // Write PID file
+    let pid_path = pid_file();
+    if let Some(parent) = pid_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&pid_path, std::process::id().to_string())?;
+
+    let state: SharedState = Arc::new(RwLock::new(DaemonState::new()));
+
+    // Start WebSocket server
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    tracing::info!("Daemon WebSocket server on port {}", port);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                if let Ok((stream, addr)) = result {
+                    let state = state.clone();
+                    tokio::spawn(handle_connection(stream, addr, state));
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Daemon shutting down");
+                break;
+            }
+        }
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(&pid_path);
+    Ok(())
+}
+
+/// Handle WebSocket connection (could be mobile client or PTY session)
+async fn handle_connection(
+    stream: TcpStream,
+    addr: SocketAddr,
+    state: SharedState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let ws = accept_async(stream).await?;
+    let (mut tx, mut rx) = ws.split();
+
+    // Wait for first message to determine client type
+    let first_msg = rx.next().await;
+
+    match first_msg {
+        Some(Ok(Message::Text(text))) => {
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                if msg.get("type").and_then(|v| v.as_str()) == Some("register_pty") {
+                    // This is a PTY session registering
+                    return handle_pty_session(msg, tx, rx, addr, state).await;
+                }
+            }
+            // Assume it's a mobile client
+            handle_mobile_client(Some(text), tx, rx, addr, state).await
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Handle mobile client connection
+async fn handle_mobile_client(
+    first_msg: Option<String>,
+    mut tx: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    mut rx: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
+    addr: SocketAddr,
+    state: SharedState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing::info!("Mobile client connected: {}", addr);
+
+    let (client_tx, mut client_rx) = mpsc::unbounded_channel::<Message>();
+
+    // Register client and get broadcast receiver
+    let mut pty_rx = {
+        let mut st = state.write().await;
+        st.mobile_clients.insert(addr, client_tx);
+        st.pty_broadcast.subscribe()
+    };
+
+    // Send welcome
+    let welcome = ServerMessage::Welcome {
+        server_version: env!("CARGO_PKG_VERSION").to_string(),
+        authenticated: true,
+    };
+    tx.send(Message::Text(serde_json::to_string(&welcome)?)).await?;
+
+    // Send sessions list
+    send_sessions_list(&state, &mut tx).await?;
+
+    // Process first message if it was a client message
+    if let Some(text) = first_msg {
+        if let Ok(msg) = serde_json::from_str::<ClientMessage>(&text) {
+            process_client_msg(msg, &state, &mut tx).await?;
+        }
+    }
+
+    loop {
+        tokio::select! {
+            // PTY output
+            result = pty_rx.recv() => {
+                match result {
+                    Ok((session_id, data)) => {
+                        let msg = ServerMessage::PtyBytes {
+                            session_id,
+                            data: BASE64.encode(&data),
+                        };
+                        if tx.send(Message::Text(serde_json::to_string(&msg)?)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+
+            // Queued messages
+            Some(msg) = client_rx.recv() => {
+                if tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+
+            // Client messages
+            result = rx.next() => {
+                match result {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(msg) = serde_json::from_str::<ClientMessage>(&text) {
+                            process_client_msg(msg, &state, &mut tx).await?;
+                        }
+                    }
+                    Some(Ok(Message::Ping(d))) => { let _ = tx.send(Message::Pong(d)).await; }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Unregister
+    state.write().await.mobile_clients.remove(&addr);
+    tracing::info!("Mobile client disconnected: {}", addr);
+    Ok(())
+}
+
+/// Handle PTY session registration
+async fn handle_pty_session(
+    reg_msg: serde_json::Value,
+    mut tx: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    mut rx: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
+    _addr: SocketAddr,
+    state: SharedState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let session_id = reg_msg["session_id"].as_str().unwrap_or("").to_string();
+    let name = reg_msg["name"].as_str().unwrap_or("Terminal").to_string();
+    let command = reg_msg["command"].as_str().unwrap_or("shell").to_string();
+    let project_path = reg_msg["project_path"].as_str().unwrap_or("").to_string();
+
+    tracing::info!("PTY session registered: {} ({})", name, session_id);
+
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (resize_tx, mut resize_rx) = mpsc::unbounded_channel::<(u16, u16)>();
+
+    // Register session
+    let pty_broadcast = {
+        let mut st = state.write().await;
+        st.sessions.insert(session_id.clone(), PtySession {
+            session_id: session_id.clone(),
+            name: name.clone(),
+            command,
+            project_path,
+            started_at: Utc::now(),
+            input_tx,
+            resize_tx,
+        });
+        st.pty_broadcast.clone()
+    };
+
+    // Notify mobile clients and persist to file
+    broadcast_sessions_update(&state).await;
+    persist_sessions_to_file(&state).await;
+
+    // Send ACK
+    tx.send(Message::Text(r#"{"type":"registered"}"#.to_string())).await?;
+
+    loop {
+        tokio::select! {
+            // PTY output from terminal wrapper
+            result = rx.next() => {
+                match result {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if msg["type"].as_str() == Some("pty_output") {
+                                if let Some(data) = msg["data"].as_str() {
+                                    if let Ok(bytes) = BASE64.decode(data) {
+                                        let _ = pty_broadcast.send((session_id.clone(), bytes));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Binary(data))) => {
+                        let _ = pty_broadcast.send((session_id.clone(), data));
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+
+            // Input from mobile to send to PTY
+            Some(input) = input_rx.recv() => {
+                let msg = serde_json::json!({
+                    "type": "input",
+                    "data": BASE64.encode(&input),
+                });
+                if tx.send(Message::Text(msg.to_string())).await.is_err() {
+                    break;
+                }
+            }
+
+            // Resize from mobile
+            Some((cols, rows)) = resize_rx.recv() => {
+                let msg = serde_json::json!({
+                    "type": "resize",
+                    "cols": cols,
+                    "rows": rows,
+                });
+                if tx.send(Message::Text(msg.to_string())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Unregister session
+    {
+        let mut st = state.write().await;
+        st.sessions.remove(&session_id);
+
+        // Notify about session end
+        let msg = ServerMessage::SessionEnded {
+            session_id: session_id.clone(),
+            exit_code: 0,
+        };
+        let msg_str = serde_json::to_string(&msg)?;
+        for client in st.mobile_clients.values() {
+            let _ = client.send(Message::Text(msg_str.clone()));
+        }
+    }
+
+    // Update persisted sessions
+    persist_sessions_to_file(&state).await;
+
+    tracing::info!("PTY session ended: {}", session_id);
+    Ok(())
+}
+
+/// Process a message from mobile client
+async fn process_client_msg(
+    msg: ClientMessage,
+    state: &SharedState,
+    tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match msg {
+        ClientMessage::SendInput { session_id, text, .. } => {
+            let st = state.read().await;
+            if let Some(session) = st.sessions.get(&session_id) {
+                let _ = session.input_tx.send(text.into_bytes());
+            }
+        }
+        ClientMessage::PtyResize { session_id, cols, rows } => {
+            let st = state.read().await;
+            if let Some(session) = st.sessions.get(&session_id) {
+                let _ = session.resize_tx.send((cols, rows));
+            }
+        }
+        ClientMessage::Ping => {
+            tx.send(Message::Text(serde_json::to_string(&ServerMessage::Pong)?)).await?;
+        }
+        ClientMessage::GetSessions => {
+            send_sessions_list(state, tx).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Send sessions list to a client
+async fn send_sessions_list(
+    state: &SharedState,
+    tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let st = state.read().await;
+    let items: Vec<SessionListItem> = st.sessions.values().map(|s| SessionListItem {
+        session_id: s.session_id.clone(),
+        name: s.name.clone(),
+        command: s.command.clone(),
+        project_path: s.project_path.clone(),
+        ws_port: DEFAULT_PORT,
+        started_at: s.started_at.to_rfc3339(),
+        cli_type: "terminal".to_string(),
+    }).collect();
+    let msg = ServerMessage::Sessions { sessions: items };
+    tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
+    Ok(())
+}
+
+/// Broadcast sessions update to all mobile clients
+async fn broadcast_sessions_update(state: &SharedState) {
+    let st = state.read().await;
+    let items: Vec<SessionListItem> = st.sessions.values().map(|s| SessionListItem {
+        session_id: s.session_id.clone(),
+        name: s.name.clone(),
+        command: s.command.clone(),
+        project_path: s.project_path.clone(),
+        ws_port: DEFAULT_PORT,
+        started_at: s.started_at.to_rfc3339(),
+        cli_type: "terminal".to_string(),
+    }).collect();
+    let msg = ServerMessage::Sessions { sessions: items };
+    if let Ok(msg_str) = serde_json::to_string(&msg) {
+        for client in st.mobile_clients.values() {
+            let _ = client.send(Message::Text(msg_str.clone()));
+        }
+    }
+}
+
+/// Persist daemon sessions to file for status command
+async fn persist_sessions_to_file(state: &SharedState) {
+    let st = state.read().await;
+    let sessions: Vec<SessionInfo> = st
+        .sessions
+        .values()
+        .map(|s| SessionInfo {
+            session_id: s.session_id.clone(),
+            name: s.name.clone(),
+            command: s.command.clone(),
+            args: vec![],
+            project_path: s.project_path.clone(),
+            ws_port: DEFAULT_PORT,
+            pid: std::process::id(), // daemon PID since we manage all sessions
+            started_at: s.started_at,
+        })
+        .collect();
+    if let Err(e) = session::save_sessions(&sessions) {
+        tracing::warn!("Failed to persist sessions: {}", e);
+    }
+}
