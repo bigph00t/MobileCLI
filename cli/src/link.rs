@@ -206,8 +206,9 @@ async fn run_linked_mode(
                     break;
                 }
                 Ok(n) => {
-                    // Check for Ctrl+D (EOF character)
-                    if buf[..n].contains(&0x04) {
+                    // Check for Ctrl+D (EOF character) - only when sent alone
+                    // Unix terminals treat Ctrl+D as EOF only on empty line
+                    if n == 1 && buf[0] == 0x04 {
                         tracing::debug!("Ctrl+D received, disconnecting");
                         break;
                     }

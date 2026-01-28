@@ -76,7 +76,11 @@ pub fn load_config() -> Option<Config> {
         _ => return None,
     };
 
-    // Get or generate device_id (for backwards compatibility with old configs)
+    // Get or generate device_id (for backwards compatibility with old configs).
+    // Note: If config is deleted/corrupted, a new device_id is generated, which will
+    // require re-pairing with the mobile app. This is intentional - preserving the
+    // device_id separately would add complexity without much benefit since re-pairing
+    // is a simple QR scan.
     let device_id = json
         .get("device_id")
         .and_then(|v| v.as_str())

@@ -249,7 +249,9 @@ async fn start_daemon_background() -> std::io::Result<()> {
     // Detach from controlling terminal so the daemon survives terminal closes.
     #[cfg(unix)]
     {
-        // SAFETY: setsid() is async-signal-safe and does not call any non-reentrant functions
+        // SAFETY: setsid() is async-signal-safe and does not call any non-reentrant functions.
+        // Note: The daemon process inherits environment variables and open file descriptors
+        // from the parent process. Stdin/stdout/stderr are explicitly redirected above.
         unsafe {
             cmd.pre_exec(|| {
                 setsid()

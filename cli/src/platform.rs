@@ -38,7 +38,7 @@ pub fn config_dir() -> PathBuf {
 ///
 /// Returns:
 /// - Unix (Linux/macOS): `$SHELL` environment variable, or `/bin/sh` as fallback
-/// - Windows: `cmd.exe` (could also use PowerShell, but cmd.exe is more universal)
+/// - Windows: PowerShell if available, otherwise `COMSPEC` (typically cmd.exe)
 pub fn default_shell() -> String {
     #[cfg(unix)]
     {

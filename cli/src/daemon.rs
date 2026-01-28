@@ -12,7 +12,7 @@ use crate::session::{self, SessionInfo};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -113,7 +113,8 @@ pub struct PtySession {
     pub cli_tracker: CliTracker,
     pub last_wait_hash: Option<u64>,
     /// Scrollback buffer for session history (for linked terminals)
-    pub scrollback: Vec<u8>,
+    /// Uses VecDeque for efficient front truncation when buffer is full
+    pub scrollback: VecDeque<u8>,
     /// Maximum scrollback buffer size
     pub scrollback_max_bytes: usize,
 }
@@ -412,7 +413,7 @@ async fn handle_pty_session(
             waiting_state: None,
             cli_tracker,
             last_wait_hash: None,
-            scrollback: Vec::new(),
+            scrollback: VecDeque::new(),
             scrollback_max_bytes: DEFAULT_SCROLLBACK_MAX_BYTES,
         });
         st.pty_broadcast.clone()
@@ -442,14 +443,14 @@ async fn handle_pty_session(
                                         let _ = pty_broadcast.send((session_id.clone(), bytes.clone()));
 
                                         // Accumulate scrollback for session history (linked terminals)
+                                        // Uses VecDeque for efficient front truncation
                                         {
                                             let mut st = state.write().await;
                                             if let Some(session) = st.sessions.get_mut(&session_id) {
-                                                session.scrollback.extend_from_slice(&bytes);
-                                                // Truncate if over limit (keep recent data)
-                                                if session.scrollback.len() > session.scrollback_max_bytes {
-                                                    let excess = session.scrollback.len() - session.scrollback_max_bytes;
-                                                    session.scrollback.drain(..excess);
+                                                session.scrollback.extend(bytes.iter().copied());
+                                                // Truncate from front if over limit (VecDeque is O(1) per pop)
+                                                while session.scrollback.len() > session.scrollback_max_bytes {
+                                                    session.scrollback.pop_front();
                                                 }
                                             }
                                         }
@@ -771,9 +772,10 @@ async fn process_client_msg(
                 if let Some(session) = st.sessions.get(&session_id) {
                     let max = max_bytes.unwrap_or(session.scrollback_max_bytes);
                     let total = session.scrollback.len();
-                    let start = if total > max { total - max } else { 0 };
-                    let slice = &session.scrollback[start..];
-                    (BASE64.encode(slice), total)
+                    let skip = if total > max { total - max } else { 0 };
+                    // VecDeque doesn't support direct slicing, so collect the tail
+                    let bytes: Vec<u8> = session.scrollback.iter().skip(skip).copied().collect();
+                    (BASE64.encode(&bytes), total)
                 } else {
                     (String::new(), 0)
                 }
