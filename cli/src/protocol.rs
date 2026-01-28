@@ -106,8 +106,8 @@ pub enum ServerMessage {
         session_id: String,
         timestamp: String,
         prompt_content: String,
-        wait_type: String,   // "tool_approval" | "plan_approval" | "question" | "input"
-        cli_type: String,    // "claude" | "terminal"
+        wait_type: String,   // "tool_approval" | "plan_approval" | "clarifying_question" | "awaiting_response"
+        cli_type: String,    // "claude" | "codex" | "gemini" | "opencode" | "terminal"
     },
     /// Waiting state cleared (user responded)
     WaitingCleared {

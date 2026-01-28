@@ -3,6 +3,9 @@
 //! Single WebSocket server that all terminal sessions stream to.
 //! Mobile connects once and sees all active sessions.
 
+use crate::detection::{
+    detect_wait_event, strip_ansi_and_normalize, ApprovalModel, CliTracker, CliType, WaitType,
+};
 use crate::protocol::{ClientMessage, ServerMessage, SessionListItem};
 use crate::session::{self, SessionInfo};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -78,9 +81,11 @@ pub fn get_pid() -> Option<u32> {
 /// Waiting state for a session
 #[derive(Debug, Clone)]
 pub struct WaitingState {
-    pub wait_type: String,      // "tool_approval" | "plan_approval" | "question" | "input"
+    pub wait_type: WaitType, // normalized waiting type
     pub prompt_content: String,
     pub timestamp: chrono::DateTime<Utc>,
+    pub approval_model: ApprovalModel,
+    pub prompt_hash: u64,
 }
 
 /// Push notification token
@@ -101,6 +106,8 @@ pub struct PtySession {
     pub input_tx: mpsc::UnboundedSender<Vec<u8>>,
     pub resize_tx: mpsc::UnboundedSender<(u16, u16)>,
     pub waiting_state: Option<WaitingState>,
+    pub cli_tracker: CliTracker,
+    pub last_wait_hash: Option<u64>,
 }
 
 /// Daemon shared state
@@ -276,6 +283,9 @@ async fn handle_mobile_client(
     // Send sessions list
     send_sessions_list(&state, &mut tx).await?;
 
+    // Send current waiting states for all sessions (for late-joining clients)
+    send_waiting_states(&state, &mut tx).await?;
+
     // Process first message if it was a client message
     if let Some(text) = first_msg {
         if let Ok(msg) = serde_json::from_str::<ClientMessage>(&text) {
@@ -355,6 +365,9 @@ async fn handle_pty_session(
 
     // Register session
     let pty_broadcast = {
+        let mut cli_tracker = CliTracker::new();
+        cli_tracker.update_from_command(&command);
+
         let mut st = state.write().await;
         st.sessions.insert(session_id.clone(), PtySession {
             session_id: session_id.clone(),
@@ -365,6 +378,8 @@ async fn handle_pty_session(
             input_tx,
             resize_tx,
             waiting_state: None,
+            cli_tracker,
+            last_wait_hash: None,
         });
         st.pty_broadcast.clone()
     };
@@ -376,9 +391,9 @@ async fn handle_pty_session(
     // Send ACK
     tx.send(Message::Text(r#"{"type":"registered"}"#.to_string())).await?;
 
-    // Buffer for detecting waiting state patterns
+    // Buffer for detecting waiting state patterns (ANSI-stripped, normalized)
     let mut output_buffer = String::new();
-    const BUFFER_MAX: usize = 2000; // Keep last 2KB for pattern matching
+    const BUFFER_MAX_CHARS: usize = 4000; // Keep last N chars for pattern matching
 
     loop {
         tokio::select! {
@@ -392,46 +407,84 @@ async fn handle_pty_session(
                                     if let Ok(bytes) = BASE64.decode(data) {
                                         let _ = pty_broadcast.send((session_id.clone(), bytes.clone()));
 
-                                        // Append to buffer for pattern detection
                                         let text = String::from_utf8_lossy(&bytes);
-                                        output_buffer.push_str(&text);
-                                        if output_buffer.len() > BUFFER_MAX {
-                                            output_buffer = output_buffer[output_buffer.len() - BUFFER_MAX..].to_string();
-                                        }
+                                        let normalized_chunk = strip_ansi_and_normalize(&text);
 
-                                        // Check for waiting state patterns
-                                        if let Some((wait_type, prompt_content)) = detect_waiting_state(&output_buffer) {
-                                            let should_notify = {
+                                        if !normalized_chunk.is_empty() {
+                                            output_buffer.push_str(&normalized_chunk);
+                                            truncate_to_max_chars(&mut output_buffer, BUFFER_MAX_CHARS);
+
+                                            // Update CLI tracker based on output
+                                            let cli_type = {
                                                 let mut st = state.write().await;
                                                 if let Some(session) = st.sessions.get_mut(&session_id) {
-                                                    // Only notify if not already waiting
-                                                    let was_waiting = session.waiting_state.is_some();
-                                                    session.waiting_state = Some(WaitingState {
-                                                        wait_type: wait_type.to_string(),
-                                                        prompt_content: prompt_content.clone(),
-                                                        timestamp: Utc::now(),
-                                                    });
-                                                    !was_waiting
+                                                    session.cli_tracker.update_from_output(&normalized_chunk);
+                                                    session.cli_tracker.current()
                                                 } else {
-                                                    false
+                                                    CliType::Terminal
                                                 }
                                             };
 
-                                            if should_notify {
-                                                // Broadcast to mobile clients
-                                                broadcast_waiting_for_input(&state, &session_id, wait_type, &prompt_content).await;
-
-                                                // Send push notifications
-                                                let tokens = {
-                                                    let st = state.read().await;
-                                                    st.push_tokens.clone()
+                                            // Check for waiting state patterns
+                                            if let Some(wait_event) = detect_wait_event(&output_buffer, cli_type) {
+                                                let should_notify = {
+                                                    let mut st = state.write().await;
+                                                    if let Some(session) = st.sessions.get_mut(&session_id) {
+                                                        let is_new = session.waiting_state.as_ref().map(|w| {
+                                                            w.prompt_hash != wait_event.prompt_hash || w.wait_type != wait_event.wait_type
+                                                        }).unwrap_or(true);
+                                                        if is_new {
+                                                            session.waiting_state = Some(WaitingState {
+                                                                wait_type: wait_event.wait_type,
+                                                                prompt_content: wait_event.prompt.clone(),
+                                                                timestamp: Utc::now(),
+                                                                approval_model: wait_event.approval_model,
+                                                                prompt_hash: wait_event.prompt_hash,
+                                                            });
+                                                            session.last_wait_hash = Some(wait_event.prompt_hash);
+                                                        }
+                                                        is_new
+                                                    } else {
+                                                        false
+                                                    }
                                                 };
-                                                send_push_notifications(
-                                                    &tokens,
-                                                    "Action Required",
-                                                    &format!("{}: {}", name, wait_type.replace('_', " ")),
-                                                    &session_id,
-                                                ).await;
+
+                                                if should_notify {
+                                                    // Broadcast to mobile clients
+                                                    broadcast_waiting_for_input(&state, &session_id).await;
+
+                                                    // Send push notifications (async to avoid blocking PTY)
+                                                    let tokens = {
+                                                        let st = state.read().await;
+                                                        st.push_tokens.clone()
+                                                    };
+                                                    let session_id_clone = session_id.clone();
+                                                    let name_clone = name.clone();
+                                                    tokio::spawn(async move {
+                                                        let (title, body) = build_notification_text(cli_type, &name_clone, &wait_event);
+                                                        send_push_notifications(&tokens, &title, &body, &session_id_clone).await;
+                                                    });
+                                                }
+                                            } else {
+                                                // If previously waiting, clear on meaningful output that is not a waiting prompt
+                                                let should_clear = {
+                                                    let mut st = state.write().await;
+                                                    if let Some(session) = st.sessions.get_mut(&session_id) {
+                                                        if session.waiting_state.is_some() && normalized_chunk.trim().chars().count() >= 10 {
+                                                            session.waiting_state = None;
+                                                            session.last_wait_hash = None;
+                                                            true
+                                                        } else {
+                                                            false
+                                                        }
+                                                    } else {
+                                                        false
+                                                    }
+                                                };
+
+                                                if should_clear {
+                                                    broadcast_waiting_cleared(&state, &session_id).await;
+                                                }
                                             }
                                         }
                                     }
@@ -463,6 +516,7 @@ async fn handle_pty_session(
                     if let Some(session) = st.sessions.get_mut(&session_id) {
                         if session.waiting_state.is_some() {
                             session.waiting_state = None;
+                            session.last_wait_hash = None;
                             drop(st);
                             broadcast_waiting_cleared(&state, &session_id).await;
                         }
@@ -597,28 +651,37 @@ async fn process_client_msg(
             tracing::info!("Registered push token ({}/{})", token_type, platform);
         }
         ClientMessage::ToolApproval { session_id, response } => {
-            // Map approval response to the appropriate input for the CLI
-            let input = match response.as_str() {
-                "yes" => "y\n",
-                "yes_always" => "a\n",  // 'a' for always in many CLIs
-                "no" => "n\n",
-                _ => "n\n",  // Default to no for safety
-            };
-
-            let cleared = {
+            let maybe_input = {
                 let mut st = state.write().await;
                 if let Some(session) = st.sessions.get_mut(&session_id) {
-                    let _ = session.input_tx.send(input.as_bytes().to_vec());
-                    // Clear the waiting state
-                    session.waiting_state = None;
-                    true
+                    let model = session
+                        .waiting_state
+                        .as_ref()
+                        .map(|w| w.approval_model)
+                        .unwrap_or_else(|| session.cli_tracker.current().default_approval_model());
+                    approval_input_for(model, response.as_str())
                 } else {
-                    false
+                    None
                 }
             };
 
+            let mut cleared = false;
+            if let Some(input) = maybe_input {
+                let mut st = state.write().await;
+                if let Some(session) = st.sessions.get_mut(&session_id) {
+                    let _ = session.input_tx.send(input.as_bytes().to_vec());
+                    session.waiting_state = None;
+                    session.last_wait_hash = None;
+                    cleared = true;
+                }
+            } else {
+                tracing::warn!(
+                    "Tool approval ignored (no applicable approval model) for session {}",
+                    session_id
+                );
+            }
+
             if cleared {
-                // Broadcast waiting_cleared to all clients
                 broadcast_waiting_cleared(state, &session_id).await;
             }
         }
@@ -640,7 +703,7 @@ async fn send_sessions_list(
         project_path: s.project_path.clone(),
         ws_port: port,
         started_at: s.started_at.to_rfc3339(),
-        cli_type: "terminal".to_string(),
+        cli_type: s.cli_tracker.current().as_str().to_string(),
     }).collect();
     let msg = ServerMessage::Sessions { sessions: items };
     tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
@@ -658,7 +721,7 @@ async fn broadcast_sessions_update(state: &SharedState) {
         project_path: s.project_path.clone(),
         ws_port: port,
         started_at: s.started_at.to_rfc3339(),
-        cli_type: "terminal".to_string(),
+        cli_type: s.cli_tracker.current().as_str().to_string(),
     }).collect();
     let msg = ServerMessage::Sessions { sessions: items };
     if let Ok(msg_str) = serde_json::to_string(&msg) {
@@ -692,19 +755,23 @@ async fn persist_sessions_to_file(state: &SharedState) {
 }
 
 /// Broadcast waiting_for_input to all mobile clients
-async fn broadcast_waiting_for_input(
-    state: &SharedState,
-    session_id: &str,
-    wait_type: &str,
-    prompt_content: &str,
-) {
+async fn broadcast_waiting_for_input(state: &SharedState, session_id: &str) {
     let st = state.read().await;
+    let session = match st.sessions.get(session_id) {
+        Some(s) => s,
+        None => return,
+    };
+    let waiting = match session.waiting_state.as_ref() {
+        Some(w) => w,
+        None => return,
+    };
+
     let msg = ServerMessage::WaitingForInput {
         session_id: session_id.to_string(),
-        timestamp: Utc::now().to_rfc3339(),
-        prompt_content: prompt_content.to_string(),
-        wait_type: wait_type.to_string(),
-        cli_type: "terminal".to_string(),
+        timestamp: waiting.timestamp.to_rfc3339(),
+        prompt_content: waiting.prompt_content.clone(),
+        wait_type: waiting.wait_type.as_str().to_string(),
+        cli_type: session.cli_tracker.current().as_str().to_string(),
     };
     if let Ok(msg_str) = serde_json::to_string(&msg) {
         for client in st.mobile_clients.values() {
@@ -727,50 +794,87 @@ async fn broadcast_waiting_cleared(state: &SharedState, session_id: &str) {
     }
 }
 
-/// Detect waiting state patterns in PTY output
-/// Returns (wait_type, prompt_content) if a waiting pattern is detected
-fn detect_waiting_state(output: &str) -> Option<(&'static str, String)> {
-    // Common approval/confirmation patterns
-    let approval_patterns = [
-        "Do you want to proceed?",
-        "Allow tool to run?",
-        "Do you want to continue?",
-        "Proceed?",
-        "[Y/n]",
-        "[y/N]",
-        "Allow | Deny",
-        "Press Enter to continue",
-        "(y/n)",
-        "(Y/n)",
-        "(yes/no)",
-    ];
-
-    // Question patterns (ends with ?)
-    let is_question = output.trim().ends_with('?')
-        && !approval_patterns.iter().any(|p| output.contains(p));
-
-    for pattern in &approval_patterns {
-        if output.contains(pattern) {
-            // Extract a reasonable prompt snippet (last 200 chars or so)
-            let prompt = if output.len() > 200 {
-                &output[output.len() - 200..]
-            } else {
-                output
+/// Send current waiting states to a newly connected mobile client.
+async fn send_waiting_states(
+    state: &SharedState,
+    tx: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let st = state.read().await;
+    for session in st.sessions.values() {
+        if let Some(waiting) = &session.waiting_state {
+            let msg = ServerMessage::WaitingForInput {
+                session_id: session.session_id.clone(),
+                timestamp: waiting.timestamp.to_rfc3339(),
+                prompt_content: waiting.prompt_content.clone(),
+                wait_type: waiting.wait_type.as_str().to_string(),
+                cli_type: session.cli_tracker.current().as_str().to_string(),
             };
-            return Some(("tool_approval", prompt.to_string()));
+            tx.send(Message::Text(serde_json::to_string(&msg)?)).await?;
         }
     }
+    Ok(())
+}
 
-    if is_question {
-        let prompt = if output.len() > 200 {
-            &output[output.len() - 200..]
-        } else {
-            output
-        };
-        return Some(("question", prompt.to_string()));
+fn approval_input_for(model: ApprovalModel, response: &str) -> Option<&'static str> {
+    match model {
+        ApprovalModel::Numbered => match response {
+            "yes" => Some("1\n"),
+            "yes_always" => Some("2\n"),
+            "no" => Some("3\n"),
+            _ => None,
+        },
+        ApprovalModel::YesNo => match response {
+            "yes" | "yes_always" => Some("y\n"),
+            "no" => Some("n\n"),
+            _ => None,
+        },
+        ApprovalModel::Arrow => match response {
+            "yes" => Some("\r"),
+            "yes_always" => Some("\x1b[C\r"),
+            "no" => Some("\x1b[C\x1b[C\r"),
+            _ => None,
+        },
+        ApprovalModel::None => None,
     }
+}
 
-    None
+fn truncate_to_max_chars(input: &mut String, max_chars: usize) {
+    let len = input.chars().count();
+    if len <= max_chars {
+        return;
+    }
+    let trimmed: String = input.chars().skip(len - max_chars).collect();
+    *input = trimmed;
+}
+
+fn build_notification_text(cli_type: CliType, session_name: &str, event: &crate::detection::WaitEvent) -> (String, String) {
+    let cli_label = match cli_type {
+        CliType::Claude => "Claude",
+        CliType::Codex => "Codex",
+        CliType::Gemini => "Gemini",
+        CliType::OpenCode => "OpenCode",
+        CliType::Terminal | CliType::Unknown => "CLI",
+    };
+
+    let title = match event.wait_type {
+        WaitType::ToolApproval => "Tool Approval Needed",
+        WaitType::PlanApproval => "Plan Approval Needed",
+        WaitType::ClarifyingQuestion => "Question from CLI",
+        WaitType::AwaitingResponse => "Awaiting Your Response",
+    };
+
+    let body = match event.wait_type {
+        WaitType::ClarifyingQuestion => {
+            let snippet = event.prompt.chars().take(100).collect::<String>();
+            format!("{}: {}", cli_label, snippet)
+        }
+        WaitType::ToolApproval => format!("{} needs permission to proceed", cli_label),
+        WaitType::PlanApproval => format!("{} has a plan ready for review", cli_label),
+        WaitType::AwaitingResponse => format!("{} is waiting for input", cli_label),
+    };
+
+    let title_with_session = format!("{} · {}", session_name, title);
+    (title_with_session, body)
 }
 
 /// Send push notifications to all registered tokens
@@ -794,6 +898,7 @@ async fn send_push_notifications(
                 "title": title,
                 "body": body,
                 "data": {
+                    "sessionId": session_id,
                     "session_id": session_id,
                     "type": "waiting_for_input"
                 },
